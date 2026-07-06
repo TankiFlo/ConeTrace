@@ -22,12 +22,12 @@ jobs:
 
     - name: Set up FFmpeg & FFprobe
       uses: FedericoCarboni/setup-ffmpeg@v3
-      id: ffmpeg
 
     - name: Stage FFprobe for App Bundling
       run: |
         New-Item -ItemType Directory -Force -Path .\res
-        Copy-Item "${{ steps.ffmpeg.outputs.ffprobe-path }}" -Destination .\res\ffprobe.exe
+        $ffprobePath = (Get-Command ffprobe).Source
+        Copy-Item $ffprobePath -Destination .\res\ffprobe.exe
 
     - name: Install Build Tools & App Dependencies
       run: |
