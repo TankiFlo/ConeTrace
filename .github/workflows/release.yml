@@ -1,0 +1,45 @@
+name: Build and Release ConeTrace
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Crucial: tells git to fetch tags so setuptools-scm can read them
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install Build Tools & App Dependencies
+      run: |
+        pip install setuptools setuptools-scm pyinstaller pyinstaller-versionfile
+        pip install -e . # Installs ConeTrace in editable mode to register its version meta
+
+    - name: Set up UPX Compressor
+      uses: crazy-max/ghaction-upx@v3
+      with:
+        install-only: true
+
+    - name: Generate Windows Version Metadata
+      run: python generate_version_metadata.py
+
+    - name: Compile Executable with PyInstaller
+      run: |
+        pyinstaller main.py -n ConeTrace --add-binary "./res/ffprobe.exe;." --version-file=version_info.txt --onefile --noconsole
+
+    - name: Upload Executable to GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: dist/ConeTrace.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

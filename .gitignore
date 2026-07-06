@@ -6,6 +6,9 @@ temp/
 logs/
 example_configs/*
 !example_configs/example.json
+res/upx*
+# PyInstaller auto-generated version metadata
+version_info.txt
 
 # ================
 # GitHub pre-generated .py .gitignore

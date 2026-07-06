@@ -1,8 +1,15 @@
 from datetime import datetime
 from tools import extract_gps_data, get_file_birthtime
+from importlib.metadata import version, PackageNotFoundError
+
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QVBoxLayout
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtCore import QFileInfo, Qt, Signal
+
+try:
+    __version__ = version("ConeTrace")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"
 
 class AddVideoDialog(QDialog):
     """Dialog to show video metadata and input map coordinates before adding to canvas."""
@@ -85,18 +92,21 @@ class AboutDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
         
-        # Application Title
-        title_label = QLabel("<h2>ConeTrace Forensics</h2>")
+        # Application Title with Dynamic Version injected
+        title_label = QLabel(f"<h2>ConeTrace Forensics v{__version__}</h2>")
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
         
-        # Application Info
+        # Application Info and GitHub Link
         info_text = (
             "<p align='center'>A metadata-based analysis interface for correlating "
             "heterogeneous media data relating to major incidents.</p>"
+            "<p align='center'><b>Source Code:</b> <a href='https://github.com/TankiFlo/ConeTrace'>https://github.com/TankiFlo/ConeTrace</a></p>"
         )
         info_label = QLabel(info_text)
         info_label.setWordWrap(True)
+        # Enable opening the GitHub link in the default browser
+        info_label.setOpenExternalLinks(True) 
         layout.addWidget(info_label)
         
         # Third-Party Legal Notices for GPLv3 Compliance
@@ -113,10 +123,8 @@ class AboutDialog(QDialog):
         
         legal_label = QLabel(legal_text)
         legal_label.setWordWrap(True)
-        # This is the crucial part: it makes the links open in the user's default web browser
         legal_label.setOpenExternalLinks(True) 
         
-        # Give it a slightly different background to distinguish it as a legal notice
         legal_label.setStyleSheet("background-color: #f5f5f5; padding: 12px; border-radius: 4px; color: #333333;")
         layout.addWidget(legal_label)
         

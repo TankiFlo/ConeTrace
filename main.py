@@ -1,18 +1,17 @@
-# pyinstaller main.py -n ConeTrace --add-binary ./res/ffprobe.exe:./ --onefile --noconsole
+# pyinstaller main.py -n ConeTrace --add-binary ./res/ffprobe.exe:./ --upx-dir ./res/upx-5.2.0-win64/ --onefile --noconsole
 import io
 import sys
 import json
 import folium
+from datetime import datetime, timedelta, timezone
+from itertools import chain
+
 from PySide6.QtWidgets import QApplication, QDial, QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QHBoxLayout, QMainWindow, QMenu, QMessageBox, QSizePolicy, QSlider, QStatusBar, QVBoxLayout, QWidget, QLabel, QLineEdit, QPushButton
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtCore import QFileInfo, QSettings, QTimer, QUrl, Qt
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtGui import QAction, QFont
-from AspectRatioWrapper import AspectRatioWrapper
-from datetime import datetime, timedelta, timezone
-from itertools import chain
-from PySide6.QtWidgets import QSlider
 
 from tools import find_closest_grid, clear_layout, get_file_birthtime, get_user_gps_data, detect_darkmode_in_windows
 from ForensicLogger import ForensicLogger
@@ -20,6 +19,7 @@ from CustomEventFilter import GlobalSpacebarFilter, VideoRightClickFilter, Propo
 from CustomWidgets import AddVideoDialog, MapEngineView, AboutDialog
 from VideoTimeline import VideoTimeline
 from BackendBridge import BackendBridge
+from AspectRatioWrapper import AspectRatioWrapper
 
 class MainWindow(QMainWindow):
     '''
