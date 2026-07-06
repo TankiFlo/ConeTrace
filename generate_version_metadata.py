@@ -1,4 +1,5 @@
 import os
+import re
 import pyinstaller_versionfile
 
 # GitHub Actions exposes the tag name here (e.g., "v1.0.3")
@@ -6,8 +7,13 @@ raw_version = os.getenv("GITHUB_REF_NAME", "0.0.0")
 # Clean up the "v" prefix if you use tags like v1.0.0
 version_string = raw_version.lstrip('v')
 
-# Windows file version details strictly require up to 4 dot-separated integers
-segments = version_string.split('.')
+# Windows file version details strictly require dot-separated integers.
+# This regex extracts just the numbers at the start (e.g., "0.1.0" from "0.1.0-alpha")
+match = re.match(r'^([\d.]+)', version_string)
+numeric_string = match.group(1).strip('.') if match else "0.0.0"
+
+# Pad out to 4 segments for the Windows binary header format
+segments = numeric_string.split('.')
 while len(segments) < 4:
     segments.append('0')
 four_part_version = ".".join(segments[:4])
