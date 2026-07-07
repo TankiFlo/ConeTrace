@@ -32,7 +32,7 @@ def get_base_path():
         return os.path.dirname(sys.executable)
     else:
         # We are running as a normal Python script (.py)
-        return os.path.dirname(os.path.abspath(__file__))
+        return os.path.dirname(os.getcwd() + "/")
 
 def find_closest_grid(n):
     """

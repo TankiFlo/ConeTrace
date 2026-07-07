@@ -13,13 +13,13 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtGui import QAction, QFont
 
-from tools import find_closest_grid, clear_layout, get_file_birthtime, get_user_gps_data, detect_darkmode_in_windows
-from ForensicLogger import ForensicLogger
-from CustomEventFilter import GlobalSpacebarFilter, VideoRightClickFilter, ProportionResizeFilter
-from CustomWidgets import AddVideoDialog, MapEngineView, AboutDialog
-from VideoTimeline import VideoTimeline
-from BackendBridge import BackendBridge
-from AspectRatioWrapper import AspectRatioWrapper
+from conetrace.tools import find_closest_grid, clear_layout, get_file_birthtime, get_user_gps_data, detect_darkmode_in_windows
+from conetrace.ForensicLogger import ForensicLogger
+from conetrace.CustomEventFilter import GlobalSpacebarFilter, VideoRightClickFilter, ProportionResizeFilter
+from conetrace.CustomWidgets import AddVideoDialog, MapEngineView, AboutDialog
+from conetrace.VideoTimeline import VideoTimeline
+from conetrace.BackendBridge import BackendBridge
+from conetrace.AspectRatioWrapper import AspectRatioWrapper
 
 class MainWindow(QMainWindow):
     '''

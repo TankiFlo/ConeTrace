@@ -2,7 +2,7 @@ import os
 import time
 import hashlib
 import json
-from tools import get_base_path
+from conetrace.tools import get_base_path
 
 class ForensicLogger:
     """Handles compact, tokenized, and hashed forensic logging."""

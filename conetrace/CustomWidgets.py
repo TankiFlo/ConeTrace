@@ -1,5 +1,5 @@
 from datetime import datetime
-from tools import extract_gps_data, get_file_birthtime
+from conetrace.tools import extract_gps_data, get_file_birthtime
 from importlib.metadata import version, PackageNotFoundError
 
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QVBoxLayout
@@ -101,7 +101,7 @@ class AboutDialog(QDialog):
         info_text = (
             "<p align='center'>A metadata-based analysis interface for correlating "
             "heterogeneous media data relating to major incidents.</p>"
-            "<p align='center'><b>Source Code:</b> <a href='https://github.com/TankiFlo/ConeTrace'>https://github.com/TankiFlo/ConeTrace</a></p>"
+            "<p align='center'><b>Source Code:</b> <a class='link' href='https://github.com/TankiFlo/ConeTrace'>https://github.com/TankiFlo/ConeTrace</a></p>"
         )
         info_label = QLabel(info_text)
         info_label.setWordWrap(True)
