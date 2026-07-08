@@ -6,9 +6,9 @@ import folium
 from datetime import datetime, timedelta, timezone
 from itertools import chain
 
-from PySide6.QtWidgets import QApplication, QDial, QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QHBoxLayout, QMainWindow, QMenu, QMessageBox, QSizePolicy, QSlider, QStatusBar, QVBoxLayout, QWidget, QLabel, QLineEdit, QPushButton
+from PySide6.QtCore import QFileInfo, QSettings, QTimer, QUrl, Qt, QDateTime
+from PySide6.QtWidgets import QApplication, QDial, QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QHBoxLayout, QMainWindow, QMenu, QMessageBox, QSizePolicy, QSlider, QStatusBar, QVBoxLayout, QWidget, QLabel, QLineEdit, QPushButton, QDateTimeEdit
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtCore import QFileInfo, QSettings, QTimer, QUrl, Qt
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtGui import QAction, QFont
@@ -51,8 +51,10 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(960, 540)
 
         self.active_marker_id = None
+        self.active_timeframes = {} # Tracks active timeframe marking per video
 
         self.map_view = MapEngineView()
+        self.map_wrapper = AspectRatioWrapper(self.map_view, ratio=1.0)
         self.map_view.fileDropped.connect(self.handle_file_drop)
 
         self.channel = QWebChannel()
@@ -117,7 +119,7 @@ class MainWindow(QMainWindow):
 
         # PREVIEW & MAP PARAMETERS
         self.preview_parameterArea = QHBoxLayout()
-        self.mapArea.addLayout(self.preview_parameterArea)
+        self.mapArea.addLayout(self.preview_parameterArea, stretch=1)
 
         # Preview
         self.moveToCompareButt = QPushButton("<<")
@@ -209,6 +211,16 @@ class MainWindow(QMainWindow):
         dir_layout.addWidget(self.dirLabel)
         dir_layout.addWidget(self.paramDirDial)
 
+        time_layout = QVBoxLayout()
+        self.timeLabel = QLabel("Start Time:")
+        self.timeLabel.setAlignment(Qt.AlignCenter)
+        self.paramTimeInput = QDateTimeEdit()
+        self.paramTimeInput.setDisplayFormat("yyyy-MM-dd HH:mm:ss.zzz") # Shows milliseconds
+        self.paramTimeInput.setTimeSpec(Qt.UTC)
+        self.paramTimeInput.dateTimeChanged.connect(self.apply_time_override)
+        time_layout.addWidget(self.timeLabel)
+        time_layout.addWidget(self.paramTimeInput)
+
         keyframe_layout = QVBoxLayout()
         self.addKeyframeButt = QPushButton("Add Keyframe")
         self.addKeyframeButt.clicked.connect(self.add_keyframe)
@@ -221,6 +233,7 @@ class MainWindow(QMainWindow):
         self.parameterLayout.addLayout(radius_layout, stretch=0)
         self.parameterLayout.addLayout(arc_layout, stretch=0)
         self.parameterLayout.addLayout(dir_layout, stretch=0)
+        self.parameterLayout.addLayout(time_layout, stretch=0)
         self.parameterLayout.addLayout(keyframe_layout, stretch=0)
 
         self.parameterParentLayout.addWidget(self.parameterWidget)
@@ -228,10 +241,7 @@ class MainWindow(QMainWindow):
 
         self.parameterWidget.hide()
 
-        # TODO record videos (s. list in latex file)
-        # TODO FIX crash when loading files too far apart?
-
-        self.mapArea.addWidget(self.map_view, 4)
+        self.mapArea.addWidget(self.map_wrapper, stretch=4)
         self.mainVerticalLayout.addLayout(self.mainHorizontalLayout)
 
         # Bottom Timeline
@@ -320,6 +330,16 @@ class MainWindow(QMainWindow):
         add_to_comp_button.triggered.connect(self.moveQuickPreviewToComparisonArea)
         edit_menu.addAction(add_to_comp_button)
         
+        self.mark_timeframe_action = QAction("Toggle Timeframe Marker (Active Video)", self)
+        self.mark_timeframe_action.setShortcut("Ctrl+M")
+        self.mark_timeframe_action.triggered.connect(self.toggle_timeframe_marker)
+        edit_menu.addAction(self.mark_timeframe_action)
+
+        self.remove_timeframe_action = QAction("Remove Last Timeframe Marker (Active Video)", self)
+        self.remove_timeframe_action.setShortcut("Ctrl+Shift+M")
+        self.remove_timeframe_action.triggered.connect(self.remove_last_timeframe_marker)
+        edit_menu.addAction(self.remove_timeframe_action)
+
         edit_menu.addSeparator()
 
         add_video_action = QAction("Add Video from File...", self)
@@ -681,7 +701,7 @@ class MainWindow(QMainWindow):
         # Calculate the absolute timeline bounds
         for mp in self.videoPreview_MPs:
             file = mp.source().toString().replace("file:///", "")
-            createdtime = get_file_birthtime(file)
+            createdtime = self.get_marker_start_time(file)
             duration = mp.duration()
             
             if createdtime < self.firstCreated:
@@ -708,7 +728,7 @@ class MainWindow(QMainWindow):
             marker_id = marker_ids[i]
             
             file = mp.source().toString().replace("file:///", "")
-            createdtime = get_file_birthtime(file)
+            createdtime = self.get_marker_start_time(file)
             start_offset = createdtime - self.firstCreated
             
             scaled_start = int(start_offset // self.time_scale)
@@ -719,7 +739,10 @@ class MainWindow(QMainWindow):
             raw_kfs = self.video_markers[marker_id].get('keyframes', [])
             scaled_kfs = [int(kf['time'] // self.time_scale) for kf in raw_kfs]
             
-            segments.append((scaled_start, scaled_duration, name, color, scaled_kfs))
+            raw_tfs = self.video_markers[marker_id].get('timeframes', [])
+            scaled_tfs = [{'start': int(tf['start'] // self.time_scale), 'end': int(tf['end'] // self.time_scale)} for tf in raw_tfs]
+
+            segments.append((scaled_start, scaled_duration, name, color, scaled_kfs, scaled_tfs))
 
         self.timelineSlider.setMinimum(0)
         self.timelineSlider.setMaximum(maxi)
@@ -727,11 +750,23 @@ class MainWindow(QMainWindow):
         # Scale the tick marks and steps so they remain proportionate
         self.timelineSlider.setTickPosition(QSlider.TicksBothSides)
         
-        # Define a safe maximum number of visual ticks (e.g., 100)
-        target_tick_count = 100 
-        calculated_interval = maxi // target_tick_count
+        # Target: 1 tick every 10 seconds
+        raw_tick_interval = 10000 # 10000ms
+        maximum_ticks = 500 # max number of ticks to show so we don't render 1 billion
+        scaled_tick_interval = max(1, raw_tick_interval // self.time_scale)
         
-        self.timelineSlider.setTickInterval(max(1, calculated_interval))
+        # Calculate how many ticks this 10-second interval would create
+        projected_tick_count = maxi // scaled_tick_interval if scaled_tick_interval > 0 else 0
+        
+        # Enforce the 500 tick maximum
+        if projected_tick_count > maximum_ticks:
+            # If > 500, calculate the exact interval needed to cap at 500 ticks
+            calculated_interval = max(1, maxi // 500)
+        else:
+            # Otherwise, stick to the clean 10-second interval
+            calculated_interval = scaled_tick_interval
+            
+        self.timelineSlider.setTickInterval(calculated_interval)
         
         # The single and page steps can remain time-based, as they don't trigger draw calls
         self.timelineSlider.setSingleStep(max(1, 17 // self.time_scale))
@@ -806,7 +841,9 @@ class MainWindow(QMainWindow):
                     'file': self.video_markers[marker_id]['file'],
                     'name': self.video_markers[marker_id]['name'],
                     'keyframes': self.video_markers[marker_id].get('keyframes', []),
-                    'color': self.video_markers[marker_id].get('color', '#3388ff')
+                    'timeframes': self.video_markers[marker_id].get('timeframes', []),
+                    'color': self.video_markers[marker_id].get('color', '#3388ff'),
+                    'start_time': self.video_markers[marker_id].get('start_time', get_file_birthtime(self.video_markers[marker_id]['file']))
                 }
 
         data = {
@@ -837,9 +874,17 @@ class MainWindow(QMainWindow):
             self.map_view.page().runJavaScript(js_code)
 
         self.video_markers = {}
+        self.active_timeframes = {}
         self.currentlyComparingVideos = []
+        self.videoPreview_MPs = []
+        self.videoCompare_MPs = []
+
         clear_layout(self.videoPreviewArea)
         clear_layout(self.videoComparisonArea)
+
+        self.setup_timelineSlider()
+        self.timelineSlider.setValue(0)
+
         self.active_marker_id = None
         self.current_file_path = None
         self.tracking_points = []
@@ -881,6 +926,7 @@ class MainWindow(QMainWindow):
 
         self.video_markers = data.get("markers", {})
         for marker_id, m_data in self.video_markers.items():
+            m_data['start_time'] = m_data.get('start_time', get_file_birthtime(m_data['file']))
             lat = m_data['lat']
             lon = m_data['lon']
             radius = m_data.get('radius', 500)
@@ -994,7 +1040,7 @@ class MainWindow(QMainWindow):
         
         for marker_id in self.video_markers:
             existing_file = self.video_markers[marker_id]['file']
-            existing_file_time = get_file_birthtime(existing_file)
+            existing_file_time = self.get_marker_start_time(existing_file)
             
             if abs(new_file_time - existing_file_time) > one_week_in_ms:
                 QMessageBox.warning(
@@ -1018,6 +1064,7 @@ class MainWindow(QMainWindow):
         self.video_markers[marker_id]['lat'] = lat
         self.video_markers[marker_id]['lon'] = lng
         self.video_markers[marker_id]['keyframes'] = []
+        self.video_markers[marker_id]['start_time'] = new_file_time
         
         color = self.marker_colors[self.color_index % len(self.marker_colors)]
         self.color_index += 1
@@ -1132,15 +1179,35 @@ class MainWindow(QMainWindow):
         self.active_marker_id = real_id
         if real_id in self.video_markers and 'name' in self.video_markers[real_id]:
             self.paramNameLabel.setText(self.video_markers[real_id]['name'])
+            
+            # Update the Time Editor silently
+            self.paramTimeInput.blockSignals(True)
+            dt = QDateTime.fromMSecsSinceEpoch(self.video_markers[real_id]['start_time'], Qt.UTC)
+            self.paramTimeInput.setDateTime(dt)
+            self.paramTimeInput.blockSignals(False)
         else:
             self.paramNameLabel.setText("Kamera")
 
         self.map_view.page().runJavaScript(f"getSemiCircle('{self.active_marker_id}', true);")
-
         self.parameterWidget.show()
 
         if real_id in self.video_markers:
             self.play_video(self.video_markers[real_id]['file'])
+
+    def apply_time_override(self):
+        if not self.active_marker_id:
+            return
+            
+        # Get the new time in MS and update the dictionary
+        new_time = self.paramTimeInput.dateTime().toMSecsSinceEpoch()
+        self.video_markers[self.active_marker_id]['start_time'] = new_time
+        
+        # Rerender the timeline 
+        self.setup_timelineSlider()
+        
+        # Force a seek to snap all currently paused videos to the correct new relative frame
+        global_pos = self.timelineSlider.value() * getattr(self, 'time_scale', 1)
+        self.seek(self.timelineSlider.value())
 
     def handle_marker_moved(self, marker_id, lat, lng):
         """Updates the Python dictionary when a marker is dragged on the JS map."""
@@ -1239,6 +1306,9 @@ class MainWindow(QMainWindow):
     def play_all_videos(self):
         pos = self.timelineSlider.value() * getattr(self, 'time_scale', 1)
         
+        self.current_global_time = pos
+        self.last_tick_time = QDateTime.currentMSecsSinceEpoch()
+
         self.playback_timer.start(33)
         self.playPauseButton.setText("PAUSE")
 
@@ -1247,7 +1317,7 @@ class MainWindow(QMainWindow):
 
         for mp in chain(preview_mps, compare_mps):
             file = mp.source().toString().replace("file:///", "")
-            createdtime = get_file_birthtime(file)
+            createdtime = self.get_marker_start_time(file)
             start_offset = createdtime - self.firstCreated
             local_pos = pos - start_offset
             
@@ -1267,6 +1337,9 @@ class MainWindow(QMainWindow):
         # Convert scaled slider position back to real milliseconds
         real_pos = pos * getattr(self, 'time_scale', 1)
 
+        self.current_global_time = real_pos
+        self.last_tick_time = QDateTime.currentMSecsSinceEpoch()
+
         self.apply_all_keyframes(real_pos)
         self.update_tracking_markers(real_pos)
 
@@ -1276,7 +1349,7 @@ class MainWindow(QMainWindow):
         # Stop everything and move to specific frames
         for mp in chain(preview_mps, compare_mps):
             file = mp.source().toString().replace("file:///", "")
-            createdtime = get_file_birthtime(file)
+            createdtime = self.get_marker_start_time(file)
             
             video_start_relative = createdtime - self.firstCreated
             local_pos = real_pos - video_start_relative
@@ -1375,7 +1448,7 @@ class MainWindow(QMainWindow):
             global_pos = self.timelineSlider.value() * getattr(self, 'time_scale', 1)
             
             file_path = self.video_markers[self.active_marker_id]['file']
-            createdtime = get_file_birthtime(file_path)
+            createdtime = self.get_marker_start_time(file_path)
             start_offset = createdtime - getattr(self, 'firstCreated', 0)
             
             local_time = global_pos - start_offset
@@ -1477,7 +1550,7 @@ class MainWindow(QMainWindow):
             if not m_data.get('keyframes'):
                 continue
                 
-            createdtime = get_file_birthtime(m_data['file'])
+            createdtime = self.get_marker_start_time(m_data['file'])
             local_pos = global_pos - (createdtime - getattr(self, 'firstCreated', 0))
             
             interp = self.get_interpolated_params(marker_id, local_pos)
@@ -1511,35 +1584,63 @@ class MainWindow(QMainWindow):
 
     def playback_tick(self):
         """Called by QTimer during playback to update slider and apply keyframes."""
-        mp = None
-        createdtime = 0
-        
-        # Find ANY actively playing video to base our global timeline position on
-        preview_mps = getattr(self, 'videoPreview_MPs', [])
-        compare_mps = getattr(self, 'videoCompare_MPs', [])
+        # 1. Advance our decoupled global clock
+        now = QDateTime.currentMSecsSinceEpoch()
+        dt = now - getattr(self, 'last_tick_time', now)
+        self.last_tick_time = now
 
-        for player in chain(preview_mps, compare_mps):
-            if player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-                mp = player
-                createdtime = get_file_birthtime(mp.source().toString().replace("file:///", ""))
-                break  # We just need one active player to establish the global time
-             
-        if not mp: 
-             # If no videos are playing (all have ended or paused), stop ticking forward
-             return
-             
-        local_pos = mp.position()
-        global_pos = local_pos + (createdtime - getattr(self, 'firstCreated', 0))
-        
-        # Advance the UI slider visually
-        scaled_pos = int(global_pos // getattr(self, 'time_scale', 1))
+        self.current_global_time += dt
+        global_pos = self.current_global_time
+
+        time_scale = getattr(self, 'time_scale', 1)
+        max_scaled_pos = self.timelineSlider.maximum()
+        max_global_pos = max_scaled_pos * time_scale
+
+        # 2. Stop playback if we reached the absolute end of the timeline
+        if global_pos >= max_global_pos:
+            global_pos = max_global_pos
+            self.pause_all_videos()
+
+        # 3. Advance the UI slider visually
+        scaled_pos = int(global_pos // time_scale)
         self.timelineSlider.blockSignals(True)
         self.timelineSlider.setValue(scaled_pos)
         self.timelineSlider.blockSignals(False)
-        
-        # Interpolate and apply
+
+        # 4. Interpolate and apply map markers
         self.apply_all_keyframes(global_pos)
         self.update_tracking_markers(global_pos)
+
+        # 5. Check all players and toggle play/pause as we cross their bounds
+        preview_mps = getattr(self, 'videoPreview_MPs', [])
+        compare_mps = getattr(self, 'videoCompare_MPs', [])
+
+        for mp in chain(preview_mps, compare_mps):
+            file = mp.source().toString().replace("file:///", "")
+            createdtime = self.get_marker_start_time(file)
+            start_offset = createdtime - getattr(self, 'firstCreated', 0)
+
+            local_pos = global_pos - start_offset
+            video_widget = mp.videoOutput()
+
+            # If we are currently inside this video's recorded timeframe
+            if 0 <= local_pos <= mp.duration():
+                if video_widget and video_widget.isHidden():
+                    video_widget.show()
+
+                if mp.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                    mp.setPosition(int(local_pos))
+                    mp.play()
+                else:
+                    # Optional drift correction: snap position if Qt Player drifts from clock
+                    if abs(mp.position() - local_pos) > 500:
+                        mp.setPosition(int(local_pos))
+            else:
+                # We have exited this video's timeframe (before it starts or after it ends)
+                if video_widget and not video_widget.isHidden():
+                    video_widget.hide()
+                if mp.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                    mp.pause()
 
     # @group Recent Files:
     def add_recent_file(self, file_path):
@@ -1691,6 +1792,17 @@ class MainWindow(QMainWindow):
                 QSlider::tick-mark:horizontal {{
                     background: {dark_tick_color};
                 }}
+                QDateTimeEdit {{
+                    background-color: {dark_bg};
+                    color: {dark_text};
+                    border: 1px solid {dark_border};
+                    padding: {input_padding};
+                }}
+                QDateTimeEdit QLineEdit {{
+                    background-color: {dark_bg};
+                    color: {dark_text};
+                    border: none; /* Let the parent container handle the border */
+                }}
             """
             self.setStyleSheet(dark_stylesheet)
             self.statusbar.showMessage("Dark Mode Enabled", 3000)
@@ -1746,14 +1858,105 @@ class MainWindow(QMainWindow):
                 QSlider::tick-mark:horizontal {{
                     background: {light_tick_color};
                 }}
+                QDateTimeEdit {{
+                    background-color: {light_bg};
+                    color: {light_text};
+                    border: 1px solid {light_border};
+                    padding: {input_padding};
+                }}
+                QDateTimeEdit QLineEdit {{
+                    background-color: {light_bg};
+                    color: {light_text};
+                    border: none;
+                }}
             """
             self.setStyleSheet(light_stylesheet)
             self.statusbar.showMessage("Light Mode Enabled", 3000)
+
+        QApplication.processEvents()
+        if hasattr(self, 'map_view'):
+            self.map_view.updateGeometry()
+            self.map_view.repaint()
 
         if hasattr(self, 'timelineSlider'):
             self.timelineSlider.is_dark = checked
             self.timelineSlider.update()
             
+    def get_marker_start_time(self, file_path):
+        """Helper to get the cached start time based on the file path."""
+        for marker_id, data in self.video_markers.items():
+            if data['file'] == file_path:
+                return data.get('start_time', get_file_birthtime(file_path))
+        return get_file_birthtime(file_path) # Fallback just in case
+    
+    # @group Relevant Sections Logic:
+    def toggle_timeframe_marker(self):
+        """Toggles the start/end of a manual timeframe marker for the active video."""
+        if not getattr(self, 'active_marker_id', None):
+            self.statusbar.showMessage("No active video selected. Click a map marker first.", 3000)
+            return
+
+        marker_id = self.active_marker_id
+        
+        # Calculate current local time for the video
+        global_pos = self.timelineSlider.value() * getattr(self, 'time_scale', 1)
+        file_path = self.video_markers[marker_id]['file']
+        createdtime = self.get_marker_start_time(file_path)
+        start_offset = createdtime - getattr(self, 'firstCreated', 0)
+        local_time = max(0, global_pos - start_offset)
+
+        if marker_id not in self.active_timeframes:
+            # START MARKING
+            self.active_timeframes[marker_id] = local_time
+            self.statusbar.showMessage(f"Started timeframe for {self.video_markers[marker_id]['name']}", 3000)
+        else:
+            # STOP MARKING
+            start_time = self.active_timeframes.pop(marker_id)
+            end_time = local_time
+
+            # Swap them if the user scrubbed backward before pressing end
+            if end_time < start_time:
+                start_time, end_time = end_time, start_time
+
+            timeframes = self.video_markers[marker_id].setdefault('timeframes', [])
+            timeframes.append({'start': start_time, 'end': end_time})
+
+            self.statusbar.showMessage(f"Saved timeframe for {self.video_markers[marker_id]['name']}", 4000)
+            
+            # Redraw timeline to show the new red box
+            self.setup_timelineSlider()
+
+    def remove_last_timeframe_marker(self):
+        """Removes the most recently saved timeframe marker for the active video, or cancels an active recording."""
+        if not getattr(self, 'active_marker_id', None):
+            self.statusbar.showMessage("No active video selected. Click a map marker first.", 3000)
+            return
+
+        marker_id = self.active_marker_id
+
+        # First priority: Cancel an actively recording timeframe
+        if marker_id in getattr(self, 'active_timeframes', {}):
+            self.active_timeframes.pop(marker_id)
+            self.statusbar.showMessage(f"Canceled active timeframe recording for {self.video_markers[marker_id]['name']}", 3000)
+            return
+
+        # Second priority: Remove the last completed timeframe
+        tfs = self.video_markers[marker_id].get('timeframes', [])
+        
+        if not tfs:
+            self.statusbar.showMessage("No timeframes to remove for this video.", 3000)
+            return
+
+        removed_tf = tfs.pop()
+        
+        # Redraw timeline to erase the red box visually
+        self.setup_timelineSlider()
+        
+        self.statusbar.showMessage(
+            f"Removed timeframe ({int(removed_tf['start'])}ms to {int(removed_tf['end'])}ms) for {self.video_markers[marker_id]['name']}", 
+            4000
+        )
+
     # @group End of Main Window:
 
 if __name__ == "__main__":

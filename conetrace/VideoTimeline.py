@@ -19,7 +19,6 @@ class VideoTimeline(QSlider):
         self.update()  # Trigger a repaint
 
     def paintEvent(self, event):
-        # 1. Let Qt draw the custom styled groove and handle first
         super().paintEvent(event)
         
         painter = QPainter(self)
@@ -30,13 +29,11 @@ class VideoTimeline(QSlider):
         groove_rect = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
         handle_rect = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
 
-        # 2. Draw High-Contrast Ticks
         tick_pos = self.tickPosition()
         if tick_pos != QSlider.NoTicks and self.maximum() > 0:
             tick_color = QColor("#ffffff") if self.is_dark else QColor("#555555")
             painter.setPen(tick_color)
             
-            # Pad the available width so ticks perfectly align with the handle's center
             available_width = self.width() - handle_rect.width()
             start_x = handle_rect.width() // 2
             
@@ -57,24 +54,36 @@ class VideoTimeline(QSlider):
                     if tick_pos in [QSlider.TicksBelow, QSlider.TicksBothSides]:
                         painter.drawLine(x, self.height() - 5, x, self.height() - 1)
 
-        # 3. Draw Video Segments and Keyframes
         if not self.video_segments or self.maximum() <= 0:
             painter.end()
             return
 
-        for start, duration, name, color_hex, keyframes in self.video_segments:
+        for start, duration, name, color_hex, keyframes, timeframes in self.video_segments:
             x = groove_rect.left() + int((start / self.maximum()) * groove_rect.width())
             w = int((duration / self.maximum()) * groove_rect.width())
             rect = QRect(x, groove_rect.top() + 2, w, groove_rect.height() - 4)
             
-            # Draw the Background using the marker's specific color
+            # Background
             painter.setPen(Qt.NoPen)
             base_color = QColor(color_hex)
-            base_color.setAlpha(120) # Keep it semi-transparent
+            base_color.setAlpha(120) 
             painter.setBrush(base_color)
             painter.drawRect(rect)
             
-            # Draw the Camera Name text
+            # Important Timeframe Marker
+            painter.setBrush(QColor(255, 0, 0, 150))
+            for tf in timeframes:
+                tf_start_abs = start + tf['start']
+                tf_end_abs = start + tf['end']
+                
+                tf_x = groove_rect.left() + int((tf_start_abs / self.maximum()) * groove_rect.width())
+                tf_w = int(((tf_end_abs - tf_start_abs) / self.maximum()) * groove_rect.width())
+                
+                # Clamp width to at least 1 pixel so very short events are still visible
+                tf_rect = QRect(tf_x, groove_rect.top() + 2, max(1, tf_w), groove_rect.height() - 4)
+                painter.drawRect(tf_rect)
+
+            # Text
             painter.setPen(QColor(0, 0, 0) if not self.is_dark else QColor(255, 255, 255)) 
             font = painter.font()
             font.setPointSize(8) 
