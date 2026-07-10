@@ -3,6 +3,8 @@ ConeTrace Forensics is a software written by Florian Kleint for his bachelor the
 
 A version of the final paper can be found in here. (not yet tho)
 
+![](./res/conetrace_preview01.PNG)
+
 ## Third-Party Software Notices
 This application bundles a pre-compiled, unmodified binary of ffprobe, which is part of the FFmpeg suite.
 FFmpeg/ffprobe is licensed under the GNU General Public License v3 (GPLv3).
