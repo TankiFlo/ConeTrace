@@ -26,11 +26,13 @@ jobs:
     - name: Set up FFmpeg & FFprobe
       uses: FedericoCarboni/setup-ffmpeg@v3
 
-    - name: Stage FFprobe for App Bundling
+    - name: Stage FFmpeg and FFprobe for App Bundling
       run: |
         New-Item -ItemType Directory -Force -Path .\res
         $ffprobePath = (Get-Command ffprobe).Source
         Copy-Item $ffprobePath -Destination .\res\ffprobe.exe
+        $ffmpegPath = (Get-Command ffmpeg).Source
+        Copy-Item $ffmpegPath -Destination .\res\ffmpeg.exe
 
     - name: Install Build Tools & App Dependencies
       run: |
@@ -47,11 +49,14 @@ jobs:
 
     - name: Compile Executable with PyInstaller
       run: |
-        pyinstaller main.py -n ConeTrace --add-binary "./res/ffprobe.exe;." --version-file=version_info.txt --onefile --noconsole
+        pyinstaller main.py -n ConeTrace_Console --add-binary "./res/ffprobe.exe;." --add-binary "./res/ffmpeg.exe;." --version-file=version_info.txt --onefile
+        pyinstaller main.py -n ConeTrace --add-binary "./res/ffprobe.exe;." --add-binary "./res/ffmpeg.exe;." --version-file=version_info.txt --onefile --noconsole
 
     - name: Upload Executable to GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: dist/ConeTrace.exe
+        files: |
+          dist/ConeTrace.exe
+          dist/ConeTrace_Console.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

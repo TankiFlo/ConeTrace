@@ -3,6 +3,7 @@ import time
 import hashlib
 import json
 from conetrace.tools import get_base_path
+import getpass
 
 class ForensicLogger:
     """Handles compact, tokenized, and hashed forensic logging."""
@@ -26,7 +27,9 @@ class ForensicLogger:
             "C_LOAD": "22",
             "M_UPD": "30",
             "COMP_ADD": "40",
-            "COMP_RM": "41"
+            "COMP_RM": "41",
+            "E_SEGM": "50",
+            "E_GRID": "51"
         }
 
     def get_file_hash(self, file_path):
@@ -48,6 +51,7 @@ class ForensicLogger:
         # Base entry: UTC Unix timestamp and event token
         entry = {
             "t": int(time.time()), 
+            "u": getpass.getuser(),
             "e": token
         }
         
@@ -80,7 +84,9 @@ class ForensicLogger:
             "C_LOAD": "Existing case data loaded",
             "M_UPD": "Metadata updated",
             "COMP_ADD": "Comparison analysis added",
-            "COMP_RM": "Comparison analysis removed"
+            "COMP_RM": "Comparison analysis removed",
+            "E_SEGM": "Important segments exported",
+            "E_GRID": "Important segments exported as grid"
         }
 
         try:
@@ -94,6 +100,7 @@ class ForensicLogger:
                     try:
                         entry = json.loads(line)
                         timestamp = entry.get("t")
+                        user = entry.get("u")
                         token = entry.get("e")
                         data = entry.get("d")
                         
@@ -102,7 +109,7 @@ class ForensicLogger:
                         event_name = reverse_tokens.get(token, "UNKNOWN")
                         action = descriptions.get(event_name, f"Unknown action taken (Token: {token})")
                         
-                        log_sentence = f"[{readable_time}] {action}"
+                        log_sentence = f"[{readable_time}] [{user}] {action}"
                         if data:
                             log_sentence += f" -> Details: {json.dumps(data)}"
                         

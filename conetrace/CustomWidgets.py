@@ -112,7 +112,7 @@ class AboutDialog(QDialog):
         # Third-Party Legal Notices for GPLv3 Compliance
         legal_text = (
             "<h3>Third-Party Software Notices:</h3>"
-            "<p>This application bundles a pre-compiled, unmodified binary of <b>ffprobe</b>, "
+            "<p>This application bundles a pre-compiled, unmodified binary of <b>ffmpeg</b> and <b>ffprobe</b>, "
             "which is part of the FFmpeg suite.</p>"
             "<p>FFmpeg is free software licensed under the "
             "<a href='https://www.gnu.org/licenses/gpl-3.0.html'>GNU General Public License v3 (GPLv3)</a>.</p>"

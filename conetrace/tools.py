@@ -32,7 +32,7 @@ def get_base_path():
         return os.path.dirname(sys.executable)
     else:
         # We are running as a normal Python script (.py)
-        return os.path.dirname(os.getcwd() + "/")
+        return os.getcwd() + "/"
 
 def find_closest_grid(n):
     """
@@ -71,6 +71,18 @@ def get_ffprobe_path():
     
     # If not bundled, assume ffprobe is in the system PATH or same directory
     return 'ffprobe'
+
+def get_ffmpeg_path():
+    """
+    Returns the correct path to ffmpeg.exe. 
+    Checks if running as a bundled PyInstaller app or a normal script.
+    """
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller extracts bundled files to a temp folder at sys._MEIPASS
+        return os.path.join(sys._MEIPASS, 'ffmpeg.exe')
+    
+    # If not bundled, assume ffmpeg is in the system PATH or same directory
+    return 'ffmpeg'
 
 def extract_gps_data(video_path):
     """

@@ -59,3 +59,17 @@ class VideoRightClickFilter(QObject):
             return True
         
         return super().eventFilter(obj, event)
+
+class VideoSelectFilter(QObject):
+    """Event filter to capture left clicks on video widgets and select the corresponding map marker."""
+    def __init__(self, marker_id, callback, parent=None):
+        super().__init__(parent)
+        self.marker_id = marker_id
+        self.callback = callback
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.callback(self.marker_id)
+                return True # Consume the event
+        return super().eventFilter(obj, event)

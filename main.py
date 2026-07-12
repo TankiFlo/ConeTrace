@@ -1,5 +1,7 @@
 # pyinstaller main.py -n ConeTrace --add-binary ./res/ffprobe.exe:./ --upx-dir ./res/upx-5.2.0-win64/ --onefile --noconsole
 import io
+import os
+import subprocess
 import sys
 import json
 import folium
@@ -11,11 +13,11 @@ from PySide6.QtWidgets import QApplication, QDial, QDialog, QDialogButtonBox, QF
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import QAction, QFont, QIcon
 
-from conetrace.tools import find_closest_grid, clear_layout, get_file_birthtime, get_user_gps_data, detect_darkmode_in_windows
+from conetrace.tools import find_closest_grid, clear_layout, get_base_path, get_file_birthtime, get_user_gps_data, detect_darkmode_in_windows, get_ffmpeg_path
 from conetrace.ForensicLogger import ForensicLogger
-from conetrace.CustomEventFilter import GlobalSpacebarFilter, VideoRightClickFilter, ProportionResizeFilter
+from conetrace.CustomEventFilter import GlobalSpacebarFilter, VideoRightClickFilter, ProportionResizeFilter, VideoSelectFilter
 from conetrace.CustomWidgets import AddVideoDialog, MapEngineView, AboutDialog
 from conetrace.VideoTimeline import VideoTimeline
 from conetrace.BackendBridge import BackendBridge
@@ -41,12 +43,15 @@ class MainWindow(QMainWindow):
         '''The last time SAVE has been activated in UTC, POSIX timestamp in ms'''
         self.timeDeltaBetweenSavesBeforeWarning = 60000
         '''How many ms can go between saves, before a warning is issued when wanting to leave the programm'''
+        self.timeDeltaBetweenSavesBeforeWarningIsIgnored = 600000000
+        '''How many ms can go between save, before the warning is not issued anymore (to prevent it popping up when haven't saved since UTC start)'''
         self.current_file_path = None
 
         self.playback_timer = QTimer(self)
         self.playback_timer.timeout.connect(self.playback_tick)
 
         self.setWindowTitle("ConeTrace")
+        self.setWindowIcon(QIcon.fromTheme("edit-find"))
         self.setWindowState(Qt.WindowMaximized)
         self.setMinimumSize(960, 540)
 
@@ -310,7 +315,21 @@ class MainWindow(QMainWindow):
         save_button.triggered.connect(self.save_as_canvas)
         save_button.setShortcut("Ctrl+Shift+S")
         file_menu.addAction(save_button)
-        
+
+        export_segments_button = QAction("Export Marked Video Segments...", self)
+        export_segments_button.triggered.connect(self.export_marked_segments)
+        export_segments_button.setToolTip(self.export_marked_segments.__doc__)
+        export_segments_button.setStatusTip(self.export_marked_segments.__doc__)
+        export_segments_button.setShortcut("Ctrl+E")
+        file_menu.addAction(export_segments_button)
+
+        export_grid_button = QAction("Export Grid Segments to Folder...", self)
+        export_grid_button.triggered.connect(self.export_comparison_grid_segments)
+        export_grid_button.setShortcut("Ctrl+Shift+E")
+        export_grid_button.setToolTip(self.export_comparison_grid_segments.__doc__)
+        export_grid_button.setStatusTip(self.export_comparison_grid_segments.__doc__)
+        file_menu.addAction(export_grid_button)
+
         file_menu.addSeparator()
 
         save_log_as_human_button = QAction("Save log to human-readable file", self)
@@ -322,7 +341,7 @@ class MainWindow(QMainWindow):
         exit_button = QAction("Exit", self)
         exit_button.triggered.connect(self.exit_program)
         file_menu.addAction(exit_button)
-        
+
         # ==========
         # EDIT MENU
         # ==========
@@ -424,6 +443,10 @@ class MainWindow(QMainWindow):
                     click_filter = VideoRightClickFilter(i, self.showCompareContextMenu, videoCompare)
                     videoCompare.installEventFilter(click_filter)
                     
+                    marker_id = self.currentlyComparingVideos[i]['id']
+                    select_filter = VideoSelectFilter(marker_id, self.handle_marker_click, videoCompare)
+                    videoCompare.installEventFilter(select_filter)
+
                     sizePolicy = videoCompare.sizePolicy()
                     sizePolicy.setRetainSizeWhenHidden(True)
                     videoCompare.setSizePolicy(sizePolicy)
@@ -491,6 +514,9 @@ class MainWindow(QMainWindow):
                     click_filter = VideoRightClickFilter(i, self.showPreviewGridContextMenu, videoPreview)
                     videoPreview.installEventFilter(click_filter)
                     
+                    select_filter = VideoSelectFilter(marker_id, self.handle_marker_click, videoPreview)
+                    videoPreview.installEventFilter(select_filter)
+
                     sizePolicy = videoPreview.sizePolicy()
                     sizePolicy.setRetainSizeWhenHidden(True)
                     videoPreview.setSizePolicy(sizePolicy)
@@ -885,6 +911,9 @@ class MainWindow(QMainWindow):
         self.setup_timelineSlider()
         self.timelineSlider.setValue(0)
 
+        self.parameterWidget.hide()
+        self.videoQuickPreview_MP.stop()
+
         self.active_marker_id = None
         self.current_file_path = None
         self.tracking_points = []
@@ -957,7 +986,7 @@ class MainWindow(QMainWindow):
 
         diff = timedelta(milliseconds=int(datetime.now(timezone.utc).timestamp() * 1000) - self.lastSaved).total_seconds()
 
-        if diff > self.timeDeltaBetweenSavesBeforeWarning / 1000:
+        if diff > self.timeDeltaBetweenSavesBeforeWarning / 1000 and diff < self.timeDeltaBetweenSavesBeforeWarningIsIgnored:
             dig = QDialog(self)
             dig.setWindowTitle("Do you really want to quit?")
             QBtn = QDialogButtonBox.Yes | QDialogButtonBox.Cancel | QDialogButtonBox.Save
@@ -1956,6 +1985,204 @@ class MainWindow(QMainWindow):
             f"Removed timeframe ({int(removed_tf['start'])}ms to {int(removed_tf['end'])}ms) for {self.video_markers[marker_id]['name']}", 
             4000
         )
+
+    # @group Export Functions:
+
+    def export_marked_segments(self):
+        """Iterates through all video markers and uses FFmpeg to slice out the marked timeframes."""
+        
+        ffmpeg_path = get_ffmpeg_path()
+
+        output_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Save Segments")
+        if not output_dir:
+            return
+
+        exported_count = 0
+
+        for marker_id, data in self.video_markers.items():
+            timeframes = data.get('timeframes', [])
+            file_path = data.get('file', '')
+
+            # Skip if there are no timeframes or the original file cannot be found
+            if not timeframes or not os.path.exists(file_path):
+                continue
+
+            file_name, file_ext = os.path.splitext(os.path.basename(file_path))
+
+            for index, tf in enumerate(timeframes):
+                # Convert UI milliseconds to FFmpeg seconds
+                start_sec = tf['start'] / 1000.0
+                duration_sec = (tf['end'] - tf['start']) / 1000.0
+
+                output_file = output_dir + f"{file_name}_segment_{index}{file_ext}"
+
+                # Construct the FFmpeg command list
+                # Note: "-c copy" is used to extract without re-encoding, ensuring high speed and zero quality loss.
+                # Note: "-ss" is for fask seek
+                command = [
+                    ffmpeg_path,
+                    "-y",                   # Overwrite output files without prompting
+                    "-ss", str(start_sec),  # Start time
+                    "-i", file_path,        # Input file
+                    "-t", str(duration_sec),# Duration of the cut
+                    "-c", "copy",           # Copy codec stream (no re-encode)
+                    output_file             # Output file path
+                ]
+
+                try:
+                    self.statusbar.showMessage(f"Exporting segment {index + 1} for {file_name}...", 2000)
+                    QApplication.processEvents() # Keep UI from completely freezing during the subprocess call
+                    
+                    # Execute FFmpeg
+                    subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    
+                    self.f_logger.log("E_SEGM", {"source": file_path, "output": output_file})
+                    exported_count += 1
+                    
+                except subprocess.CalledProcessError as e:
+                    # Catch and log any FFmpeg syntax or file errors
+                    error_msg = e.stderr.decode('utf-8')
+                    self.statusbar.showMessage("FFmpeg export error. Check console.", 5000)
+                    print(f"FFmpeg Error on {file_name}:\n{error_msg}")
+                    continue
+
+        self.statusbar.showMessage(f"Successfully exported {exported_count} video segments.", 5000)
+
+    def export_comparison_grid_segments(self):
+        """Exports a separate grid video for each marked timeframe across the comparison videos."""
+        n = len(self.currentlyComparingVideos)
+        
+        if n == 0:
+            self.statusbar.showMessage("No videos in comparison area to export.", 3000)
+            return
+
+        # Collect all unique timeframes from the currently compared videos
+        segments_to_export = []
+        for vid in self.currentlyComparingVideos:
+            marker_id = vid['id']
+            tfs = self.video_markers[marker_id].get('timeframes', [])
+            vid_start = self.get_marker_start_time(vid['file'])
+            
+            for tf in tfs:
+                global_start = vid_start + tf['start']
+                global_end = vid_start + tf['end']
+                
+                # Deduplicate overlapping/identical segments (1 second tolerance) 
+                # so we don't render the exact same grid twice
+                is_duplicate = any(
+                    abs(s['global_start'] - global_start) < 1000 and 
+                    abs(s['global_end'] - global_end) < 1000 
+                    for s in segments_to_export
+                )
+                
+                if not is_duplicate and global_end > global_start:
+                    segments_to_export.append({
+                        'global_start': global_start,
+                        'global_end': global_end,
+                        'duration_sec': (global_end - global_start) / 1000.0
+                    })
+
+        if not segments_to_export:
+            self.statusbar.showMessage("No timeframes marked in the comparison videos.", 3000)
+            return
+
+        # Sort chronologically
+        segments_to_export.sort(key=lambda x: x['global_start'])
+
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory to Save Grid Segments")
+        if not dir_path:
+            return
+
+        ffmpeg_path = get_ffmpeg_path()
+
+        rows, cols = find_closest_grid(n)
+        cell_w, cell_h = 1280, 720
+
+        font_path = "C:/Windows/Fonts/arial.ttf"
+        escaped_font_path = font_path.replace(":", "\\:")
+
+        exported_count = 0
+
+        for seg_idx, segment in enumerate(segments_to_export):
+            global_start = segment['global_start']
+            duration_sec = segment['duration_sec']
+            
+            out_file_name = f"grid_segment_{seg_idx + 1}.mp4"
+            file_path = os.path.join(dir_path, out_file_name)
+
+            command = [ffmpeg_path, "-y"]
+            filter_complex = ""
+            layouts = []
+
+            for i, vid in enumerate(self.currentlyComparingVideos):
+                vid_start = self.get_marker_start_time(vid['file'])
+                
+                offset_ms = vid_start - global_start
+                
+                if offset_ms < 0:
+                    # Video started BEFORE the segment. We seek exactly to the segment start.
+                    seek_sec = abs(offset_ms) / 1000.0
+                    command.extend(["-ss", str(seek_sec), "-i", vid['file']])
+                    pad_sec = 0.0
+                else:
+                    # Video starts AFTER the segment. We start it from 0, but pad the beginning with black.
+                    command.extend(["-i", vid['file']])
+                    pad_sec = offset_ms / 1000.0
+
+                safe_name = vid['name'].replace("'", "\\'").replace(":", "\\:")
+                
+                # 1. Scale/Pad to uniform 720p
+                # 2. tpad pads the start (if video starts late) and pads the end infinitely (if it ends early)
+                # 3. drawtext applies the camera name
+                input_filter = (
+                    f"[{i}:v]scale={cell_w}:{cell_h}:force_original_aspect_ratio=decrease,"
+                    f"pad={cell_w}:{cell_h}:(ow-iw)/2:(oh-ih)/2,"
+                    f"tpad=start_duration={pad_sec}:stop_duration=86400:color=black,"
+                    f"drawtext=text='{safe_name}':fontfile='{escaped_font_path}':x=20:y=h-th-20:"
+                    f"fontsize=48:fontcolor=white:box=1:boxcolor=black@0.6[v{i}]; "
+                )
+                filter_complex += input_filter
+
+                # Layout math
+                c = i % cols
+                r = i // cols
+                x = c * cell_w
+                y = r * cell_h
+                layouts.append(f"{x}_{y}")
+
+            if n == 1:
+                out_map = "[v0]"
+            else:
+                stack_inputs = "".join([f"[v{i}]" for i in range(n)])
+                layout_str = "|".join(layouts)
+                filter_complex += f"{stack_inputs}xstack=inputs={n}:layout={layout_str}:fill=black[out]"
+                out_map = "[out]"
+
+            # Construct final command string
+            command.extend([
+                "-filter_complex", filter_complex,
+                "-map", out_map,
+                "-t", str(duration_sec),  # This caps the infinite black padding exactly at segment end
+                "-c:v", "libx264",
+                "-crf", "23",
+                "-preset", "fast",
+                "-an", 
+                file_path
+            ])
+
+            try:
+                self.statusbar.showMessage(f"Exporting grid segment {seg_idx + 1} of {len(segments_to_export)}...", 2000)
+                QApplication.processEvents()
+                subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.f_logger.log("E_SEGM", {"output": file_path})
+                exported_count += 1
+            except subprocess.CalledProcessError as e:
+                error_msg = e.stderr.decode('utf-8')
+                print(f"FFmpeg Error on {out_file_name}:\n{error_msg}")
+                self.statusbar.showMessage(f"FFmpeg export error on segment {seg_idx + 1}. Check console.", 5000)
+                continue
+
+        self.statusbar.showMessage(f"Successfully exported {exported_count} grid segments.", 5000)
 
     # @group End of Main Window:
 

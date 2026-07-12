@@ -1,7 +1,7 @@
 # ================
 # ConeTrace
 # ================
-res/ffprobe.exe
+res/ff*.exe
 temp/
 logs/
 example_configs/*
