@@ -2014,7 +2014,7 @@ class MainWindow(QMainWindow):
                 start_sec = tf['start'] / 1000.0
                 duration_sec = (tf['end'] - tf['start']) / 1000.0
 
-                output_file = output_dir + f"{file_name}_segment_{index}{file_ext}"
+                output_file = output_dir + f"/{file_name}_segment_{index}{file_ext}"
 
                 # Construct the FFmpeg command list
                 # Note: "-c copy" is used to extract without re-encoding, ensuring high speed and zero quality loss.
