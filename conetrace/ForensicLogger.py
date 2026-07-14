@@ -1,9 +1,15 @@
+import getpass
+from importlib.metadata import PackageNotFoundError, version
 import os
 import time
 import hashlib
 import json
 from conetrace.tools import get_base_path
-import getpass
+
+try:
+    __version__ = version("ConeTrace")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"
 
 class ForensicLogger:
     """Handles compact, tokenized, and hashed forensic logging."""
@@ -51,6 +57,7 @@ class ForensicLogger:
         # Base entry: UTC Unix timestamp and event token
         entry = {
             "t": int(time.time()), 
+            "v": __version__,
             "u": getpass.getuser(),
             "e": token
         }

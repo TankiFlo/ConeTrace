@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from itertools import chain
 
 from PySide6.QtCore import QFileInfo, QSettings, QTimer, QUrl, Qt, QDateTime
-from PySide6.QtWidgets import QApplication, QDial, QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QHBoxLayout, QMainWindow, QMenu, QMessageBox, QSizePolicy, QSlider, QStatusBar, QVBoxLayout, QWidget, QLabel, QLineEdit, QPushButton, QDateTimeEdit
+from PySide6.QtWidgets import QApplication, QDial, QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QHBoxLayout, QMainWindow, QMenu, QMessageBox, QScrollArea, QSizePolicy, QSlider, QStatusBar, QVBoxLayout, QWidget, QLabel, QLineEdit, QPushButton, QDateTimeEdit
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -103,24 +103,32 @@ class MainWindow(QMainWindow):
         # ==========================================
         # VIDEO COMPARISON AREA (Top Grid)
         # ==========================================
-        self.videoComparisonArea = QGridLayout()
+        self.comparisonAreaWidget = QWidget()
+        self.comparisonAreaWidget.setObjectName("comparisonArea")
+        self.videoComparisonArea = QGridLayout(self.comparisonAreaWidget)
         self.videoComparisonArea.setSpacing(1)
-        self.videoComparisonArea.setContentsMargins(0, 0, 0, 0)
-        self.videoAreaVertical.addLayout(self.videoComparisonArea)
+        self.videoComparisonArea.setContentsMargins(5, 5, 5, 5)
+        self.videoAreaVertical.addWidget(self.comparisonAreaWidget, 3)
 
         # ==========================================
         # VIDEO PREVIEW AREA (Bottom Grid)
         # ==========================================
-        self.videoPreviewArea = QGridLayout()
-        self.videoAreaVertical.addLayout(self.videoPreviewArea)
+        self.previewAreaWidget = QWidget()
+        self.previewAreaWidget.setObjectName("previewArea")
+        self.videoPreviewArea = QGridLayout(self.previewAreaWidget)
+        self.videoPreviewArea.setContentsMargins(5, 5, 5, 5)
+        self.videoAreaVertical.addWidget(self.previewAreaWidget, 2)
 
-        self.mainHorizontalLayout.addLayout(self.videoAreaVertical, 5)
+        self.mainHorizontalLayout.addLayout(self.videoAreaVertical, 4)
 
         # ==========================================
         # MAP AREA
         # ==========================================
-        self.mapArea = QVBoxLayout()
-        self.mainHorizontalLayout.addLayout(self.mapArea, 4)
+        self.mapAreaWidget = QWidget()
+        self.mapAreaWidget.setObjectName("mapArea")
+        self.mapArea = QVBoxLayout(self.mapAreaWidget)
+        self.mapArea.setContentsMargins(5, 5, 5, 5)
+        self.mainHorizontalLayout.addWidget(self.mapAreaWidget, 3)
 
         # PREVIEW & MAP PARAMETERS
         self.preview_parameterArea = QHBoxLayout()
@@ -249,19 +257,51 @@ class MainWindow(QMainWindow):
         self.mapArea.addWidget(self.map_wrapper, stretch=4)
         self.mainVerticalLayout.addLayout(self.mainHorizontalLayout)
 
-        # Bottom Timeline
-        self.timelineSlider = VideoTimeline(parent=self.centralwidget)
-        self.timelineSlider.setMinimum(0)
-        self.timelineSlider.setOrientation(Qt.Orientation.Horizontal)
-        # self.timelineSlider.sliderMoved.connect(self.seek)
-        self.timelineSlider.valueChanged.connect(self.seek)
-        self.timelineSlider.setSingleStep(17) # 1 Frame is about 127 ms at 60FPS
-        self.timelineSlider.setPageStep(1000)
-        self.mainVerticalLayout.addWidget(self.timelineSlider)
+        # ==========================================
+        # TIMELINE AREA
+        # ==========================================
+        self.timelineContainer = QWidget()
+        self.timelineContainer.setObjectName("timelineArea")
+        self.timelineLayout = QVBoxLayout(self.timelineContainer)
+        self.timelineLayout.setContentsMargins(5, 5, 5, 5)
+
+        # Zoom Controls
+        self.zoomLayout = QHBoxLayout()
+        self.zoomLabel = QLabel("Zoom:")
+        self.zoomLayout.addWidget(self.zoomLabel)
+        
+        self.timelineZoomSlider = QSlider(Qt.Horizontal)
+        self.timelineZoomSlider.setRange(100, 1000) # 100% to 1000% zoom
+        self.timelineZoomSlider.setValue(100)
+        self.timelineZoomSlider.valueChanged.connect(self.apply_timeline_zoom)
+        self.zoomLayout.addWidget(self.timelineZoomSlider)
+        self.timelineLayout.addLayout(self.zoomLayout)
+
+        # Scroll Area for multiple timelines
+        self.timelineScrollArea = QScrollArea()
+        self.timelineScrollArea.setWidgetResizable(True)
+        self.timelineScrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.timelineScrollArea.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # Max 5 timelines before vertical scroll (assuming 40px height per timeline + spacing)
+        self.timelineScrollArea.setMaximumHeight((40 * 5) + 30)
+
+        self.timelinesWidget = QWidget()
+        self.timelinesLayout = QVBoxLayout(self.timelinesWidget)
+        self.timelinesLayout.setContentsMargins(0, 0, 0, 0)
+        self.timelinesLayout.setSpacing(5)
+        self.timelinesLayout.setAlignment(Qt.AlignTop)
+        
+        self.timelineScrollArea.setWidget(self.timelinesWidget)
+        self.timelineLayout.addWidget(self.timelineScrollArea)
+
+        self.mainVerticalLayout.addWidget(self.timelineContainer)
 
         self.playPauseButton = QPushButton("PLAY")
         self.playPauseButton.clicked.connect(self.toggle_playback)
         self.mainVerticalLayout.addWidget(self.playPauseButton)
+        
+        self.timeline_sliders = {} # Dictionary to track individual sliders
         
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
@@ -747,7 +787,48 @@ class MainWindow(QMainWindow):
         
         maxi = int(raw_maxi // self.time_scale)
 
-        segments = []
+        # Filter for loaded video players with resolved durations
+        durations = [mp.duration() for mp in self.videoPreview_MPs if mp.duration() > 0]
+        min_duration = min(durations) if durations else 5000  # Default to 5 seconds if not yet resolved
+
+        if raw_maxi > 0 and min_duration > 0:
+            sparsity_ratio = raw_maxi / min_duration
+            
+            # Max zoom: Shortest clip should at least span the entire visible viewport width
+            max_zoom_factor = max(10.0, sparsity_ratio)
+            
+            # Min zoom: Ensure clips don't completely disappear (minimum 1% of the viewport width)
+            min_zoom_factor = max(1.0, sparsity_ratio / 100.0)
+            
+            # Prevent layout engine crashes by clamping parameters to safe limits (Qt layout size limit is 16.7M px)
+            max_zoom_factor = min(10000.0, max_zoom_factor)
+            min_zoom_factor = min(100.0, min_zoom_factor)
+            
+            if min_zoom_factor >= max_zoom_factor:
+                min_zoom_factor = max_zoom_factor / 2.0
+        else:
+            min_zoom_factor = 1.0
+            max_zoom_factor = 10.0
+
+        # Temporarily block signals while updating slider settings to avoid layout flickering
+        self.timelineZoomSlider.blockSignals(True)
+        
+        min_val = int(min_zoom_factor * 100)
+        max_val = int(max_zoom_factor * 100)
+        self.timelineZoomSlider.setRange(min_val, max_val)
+        
+        # Guard rail current slider value within the updated dynamic range
+        if self.timelineZoomSlider.value() < min_val:
+            self.timelineZoomSlider.setValue(min_val)
+        elif self.timelineZoomSlider.value() > max_val:
+            self.timelineZoomSlider.setValue(max_val)
+            
+        self.timelineZoomSlider.blockSignals(False)
+
+        # Clear existing timelines
+        clear_layout(self.timelinesLayout)
+        self.timeline_sliders.clear()
+
         marker_ids = list(self.video_markers.keys())
         
         for i, mp in enumerate(self.videoPreview_MPs):
@@ -768,38 +849,27 @@ class MainWindow(QMainWindow):
             raw_tfs = self.video_markers[marker_id].get('timeframes', [])
             scaled_tfs = [{'start': int(tf['start'] // self.time_scale), 'end': int(tf['end'] // self.time_scale)} for tf in raw_tfs]
 
-            segments.append((scaled_start, scaled_duration, name, color, scaled_kfs, scaled_tfs))
-
-        self.timelineSlider.setMinimum(0)
-        self.timelineSlider.setMaximum(maxi)
-        
-        # Scale the tick marks and steps so they remain proportionate
-        self.timelineSlider.setTickPosition(QSlider.TicksBothSides)
-        
-        # Target: 1 tick every 10 seconds
-        raw_tick_interval = 10000 # 10000ms
-        maximum_ticks = 500 # max number of ticks to show so we don't render 1 billion
-        scaled_tick_interval = max(1, raw_tick_interval // self.time_scale)
-        
-        # Calculate how many ticks this 10-second interval would create
-        projected_tick_count = maxi // scaled_tick_interval if scaled_tick_interval > 0 else 0
-        
-        # Enforce the 500 tick maximum
-        if projected_tick_count > maximum_ticks:
-            # If > 500, calculate the exact interval needed to cap at 500 ticks
-            calculated_interval = max(1, maxi // 500)
-        else:
-            # Otherwise, stick to the clean 10-second interval
-            calculated_interval = scaled_tick_interval
+            slider = VideoTimeline(parent=self.centralwidget)
+            slider.is_dark = self.dark_action.isChecked()
+            slider.setMinimum(0)
+            slider.setMaximum(maxi)
+            slider.setOrientation(Qt.Orientation.Horizontal)
+            slider.setFixedHeight(40) # Fixed height to enforce the 5-item stack limit
             
-        self.timelineSlider.setTickInterval(calculated_interval)
-        
-        # The single and page steps can remain time-based, as they don't trigger draw calls
-        self.timelineSlider.setSingleStep(max(1, 17 // self.time_scale))
-        self.timelineSlider.setPageStep(max(1, 1000 // self.time_scale))
-        
-        # Pass the segments to the custom slider to draw the blocks
-        self.timelineSlider.set_video_segments(segments)
+            # The single and page steps can remain time-based, as they don't trigger draw calls
+            slider.setSingleStep(max(1, 17 // self.time_scale))
+            slider.setPageStep(max(1, 1000 // self.time_scale))
+
+            # Draw only this specific segment
+            slider.set_video_segments([(scaled_start, scaled_duration, name, color, scaled_kfs, scaled_tfs)])
+            
+            # Connect all sliders to the master seek logic
+            slider.valueChanged.connect(self.seek)
+            
+            self.timelinesLayout.addWidget(slider)
+            self.timeline_sliders[marker_id] = slider
+
+        self.apply_timeline_zoom() # Restore zoom state upon layout refresh
 
     # @group Comparison Area Moving:
     def moveQuickPreviewToComparisonArea(self):
@@ -909,7 +979,12 @@ class MainWindow(QMainWindow):
         clear_layout(self.videoComparisonArea)
 
         self.setup_timelineSlider()
-        self.timelineSlider.setValue(0)
+        
+        if hasattr(self, 'timeline_sliders'):
+            for slider in self.timeline_sliders.values():
+                slider.blockSignals(True)
+                slider.setValue(0)
+                slider.blockSignals(False)
 
         self.parameterWidget.hide()
         self.videoQuickPreview_MP.stop()
@@ -1235,8 +1310,13 @@ class MainWindow(QMainWindow):
         self.setup_timelineSlider()
         
         # Force a seek to snap all currently paused videos to the correct new relative frame
-        global_pos = self.timelineSlider.value() * getattr(self, 'time_scale', 1)
-        self.seek(self.timelineSlider.value())
+        if not self.timeline_sliders:
+            return
+                
+        current_slider_val = list(self.timeline_sliders.values())[0].value()
+        global_pos = current_slider_val * getattr(self, 'time_scale', 1)
+
+        self.seek(global_pos)
 
     def handle_marker_moved(self, marker_id, lat, lng):
         """Updates the Python dictionary when a marker is dragged on the JS map."""
@@ -1246,7 +1326,11 @@ class MainWindow(QMainWindow):
 
     def handle_map_click(self, lat, lng):
         if getattr(self, 'paint_mode_active', False):
-            global_pos = self.timelineSlider.value() * getattr(self, 'time_scale', 1)
+            if not self.timeline_sliders:
+                return
+                
+            current_slider_val = list(self.timeline_sliders.values())[0].value()
+            global_pos = current_slider_val * getattr(self, 'time_scale', 1)
             
             point_id = f"track_{len(self.tracking_points)}_{int(global_pos)}"
             self.tracking_points.append({
@@ -1299,13 +1383,42 @@ class MainWindow(QMainWindow):
         js_code = f"syncTrackingPoints('{json.dumps(visible_points)}', {global_pos}, {max_time_span});"
         self.map_view.page().runJavaScript(js_code)
 
+    def update_map_marker_opacity(self, file_path, is_active):
+        """Updates the opacity of the map marker and semicircle based on video activity."""
+        if not hasattr(self, '_marker_active_states'):
+            self._marker_active_states = {}
+            
+        # Safely find the marker_id associated with this video file
+        marker_id = next((m_id for m_id, m_data in self.video_markers.items() if m_data['file'] == file_path), None)
+                
+        if marker_id:
+            # Only trigger a JS update if the state has actually changed (prevents map lag)
+            if self._marker_active_states.get(marker_id) != is_active:
+                self._marker_active_states[marker_id] = is_active
+                
+                # Set strong opacity for active, weak opacity for inactive
+                op = 1.0 if is_active else 0.4
+                fill_op = 0.3 if is_active else 0.05
+                
+                js_code = f"""
+                if (typeof mapData !== 'undefined' && mapData['{marker_id}']) {{
+                    mapData['{marker_id}'].marker.setOpacity({op});
+                    mapData['{marker_id}'].semi.setStyle({{opacity: {op}, fillOpacity: {fill_op}}});
+                }}
+                """
+                self.map_view.page().runJavaScript(js_code)
+
     def remove_last_tracking_point(self):
         """Removes the chronologically latest tracking point and updates the map."""
         if hasattr(self, 'tracking_points') and self.tracking_points:
             removed_point = self.tracking_points.pop()
             
             # Get the current timeline position to refresh the map accurately
-            global_pos = self.timelineSlider.value() * getattr(self, 'time_scale', 1)
+            if not self.timeline_sliders:
+                return
+                
+            current_slider_val = list(self.timeline_sliders.values())[0].value()
+            global_pos = current_slider_val * getattr(self, 'time_scale', 1)
             
             # Sync the updated (shorter) list with the JavaScript map
             self.update_tracking_markers(global_pos)
@@ -1333,7 +1446,11 @@ class MainWindow(QMainWindow):
             mp.pause()
 
     def play_all_videos(self):
-        pos = self.timelineSlider.value() * getattr(self, 'time_scale', 1)
+        if not self.timeline_sliders:
+            return
+            
+        current_slider_val = list(self.timeline_sliders.values())[0].value()
+        pos = current_slider_val * getattr(self, 'time_scale', 1)
         
         self.current_global_time = pos
         self.last_tick_time = QDateTime.currentMSecsSinceEpoch()
@@ -1353,11 +1470,13 @@ class MainWindow(QMainWindow):
             video_widget = mp.videoOutput()
             
             if 0 <= local_pos <= mp.duration():
+                self.update_map_marker_opacity(file, True)
                 if video_widget:
                     video_widget.show()
                 mp.setPosition(int(local_pos))
                 mp.play()
             else:
+                self.update_map_marker_opacity(file, False)
                 if video_widget:
                     video_widget.hide()
                 mp.pause()
@@ -1368,6 +1487,12 @@ class MainWindow(QMainWindow):
 
         self.current_global_time = real_pos
         self.last_tick_time = QDateTime.currentMSecsSinceEpoch()
+
+        # Sync visual sliders (if moved programmatically or snapped)
+        for slider in self.timeline_sliders.values():
+            slider.blockSignals(True)
+            slider.setValue(pos)
+            slider.blockSignals(False)
 
         self.apply_all_keyframes(real_pos)
         self.update_tracking_markers(real_pos)
@@ -1383,6 +1508,9 @@ class MainWindow(QMainWindow):
             video_start_relative = createdtime - self.firstCreated
             local_pos = real_pos - video_start_relative
             
+            is_active = 0 <= local_pos <= mp.duration()
+            self.update_map_marker_opacity(file, is_active)
+
             mp.pause()
             
             # Set position boundaries so videos don't break when seeking past their ends
@@ -1473,8 +1601,11 @@ class MainWindow(QMainWindow):
             arc = self.paramArcSlider.value() % 360
             direction = int((self.paramDirDial.value() + 180) % 360)
             
-            # Get the real global time in milliseconds from the slider
-            global_pos = self.timelineSlider.value() * getattr(self, 'time_scale', 1)
+            if not self.timeline_sliders:
+                return
+                
+            current_slider_val = list(self.timeline_sliders.values())[0].value()
+            global_pos = current_slider_val * getattr(self, 'time_scale', 1)
             
             file_path = self.video_markers[self.active_marker_id]['file']
             createdtime = self.get_marker_start_time(file_path)
@@ -1527,7 +1658,11 @@ class MainWindow(QMainWindow):
         # Re-draw the timeline to remove the visual tick mark
         self.setup_timelineSlider()
         
-        global_pos = self.timelineSlider.value() * getattr(self, 'time_scale', 1)
+        if not self.timeline_sliders:
+            return
+                
+        current_slider_val = list(self.timeline_sliders.values())[0].value()
+        global_pos = current_slider_val * getattr(self, 'time_scale', 1)
         self.apply_all_keyframes(global_pos)
         
         self.statusbar.showMessage(f"Removed keyframe at {int(removed_kf['time'])}ms", 4000)
@@ -1622,7 +1757,12 @@ class MainWindow(QMainWindow):
         global_pos = self.current_global_time
 
         time_scale = getattr(self, 'time_scale', 1)
-        max_scaled_pos = self.timelineSlider.maximum()
+
+        if not self.timeline_sliders:
+            return
+            
+        current_slider_max = list(self.timeline_sliders.values())[0].maximum()
+        max_scaled_pos = current_slider_max
         max_global_pos = max_scaled_pos * time_scale
 
         # 2. Stop playback if we reached the absolute end of the timeline
@@ -1632,9 +1772,10 @@ class MainWindow(QMainWindow):
 
         # 3. Advance the UI slider visually
         scaled_pos = int(global_pos // time_scale)
-        self.timelineSlider.blockSignals(True)
-        self.timelineSlider.setValue(scaled_pos)
-        self.timelineSlider.blockSignals(False)
+        for slider in self.timeline_sliders.values():
+            slider.blockSignals(True)
+            slider.setValue(scaled_pos)
+            slider.blockSignals(False)
 
         # 4. Interpolate and apply map markers
         self.apply_all_keyframes(global_pos)
@@ -1654,6 +1795,7 @@ class MainWindow(QMainWindow):
 
             # If we are currently inside this video's recorded timeframe
             if 0 <= local_pos <= mp.duration():
+                self.update_map_marker_opacity(file, True)
                 if video_widget and video_widget.isHidden():
                     video_widget.show()
 
@@ -1666,6 +1808,7 @@ class MainWindow(QMainWindow):
                         mp.setPosition(int(local_pos))
             else:
                 # We have exited this video's timeframe (before it starts or after it ends)
+                self.update_map_marker_opacity(file, False)
                 if video_widget and not video_widget.isHidden():
                     video_widget.hide()
                 if mp.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
@@ -1751,8 +1894,9 @@ class MainWindow(QMainWindow):
         btn_padding          = "5px"
         input_padding        = "5px"
         slider_groove_height = "10px"
-        slider_handle_width  = "10px"
-        slider_handle_radius = "3px"
+        slider_handle_width  = "5px"
+        slider_handle_radius = "0px"
+        slider_handle_margin = "-15px 0px" 
 
         if checked:
             # ==========================================
@@ -1774,6 +1918,21 @@ class MainWindow(QMainWindow):
                 QWidget {{ color: {dark_text}; }}
                 QLabel {{ color: {dark_text}; }}
                 
+                #comparisonArea, #previewArea, #mapArea, #timelineArea {{
+                    border: 2px solid {dark_border};
+                    border-radius: 4px;
+                    background-color: {dark_bg};
+                }}
+
+                QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {{
+                    background-color: transparent;
+                    border: none;
+                }}
+                
+                QSlider {{
+                    background: transparent;
+                }}
+
                 #parameterContainer {{ 
                     background-color: {dark_panel_bg}; 
                     border: 1px solid {dark_border}; 
@@ -1811,11 +1970,11 @@ class MainWindow(QMainWindow):
                     background: {dark_bg}; 
                     margin: 2px 0; 
                 }}
-                QSlider::handle:horizontal {{ 
-                    background: {dark_text}; 
-                    border: 1px solid {dark_slider_handle_border}; 
+                QSlider::handle:horizontal {{
+                    background: {dark_text};
+                    border: 1px solid {dark_slider_handle_border};
                     width: {slider_handle_width}; 
-                    margin: -2px 0; 
+                    margin: {slider_handle_margin};
                     border-radius: {slider_handle_radius}; 
                 }}
                 QSlider::tick-mark:horizontal {{
@@ -1846,6 +2005,8 @@ class MainWindow(QMainWindow):
             light_border       = "#cccccc"  # Subtle borders
             light_btn_hover    = "#e0e0e0"  # Interactive hover state
             light_btn_pressed  = "#d0d0d0"  # Selection & press states
+            light_slider_groove_border = "#cccccc"
+            light_slider_handle_border = "#aaaaaa"
             light_tick_color   = "#555555"  # Defined dark gray for clean light mode tracking
 
             light_stylesheet = f"""
@@ -1853,6 +2014,21 @@ class MainWindow(QMainWindow):
                 QWidget {{ color: {light_text}; }}
                 QLabel {{ color: {light_text}; }}
                 
+                #comparisonArea, #previewArea, #mapArea, #timelineArea {{
+                    border: 2px solid {light_border};
+                    border-radius: 4px;
+                    background-color: {light_bg};
+                }}
+
+                QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {{
+                    background-color: transparent;
+                    border: none;
+                }}
+                
+                QSlider {{
+                    background: transparent;
+                }}
+
                 #parameterContainer {{ 
                     background-color: {light_panel_bg}; 
                     border: 1px solid {light_border}; 
@@ -1884,6 +2060,20 @@ class MainWindow(QMainWindow):
                 
                 QStatusBar {{ background-color: {light_bg}; color: {light_text}; }}
                 
+                QSlider::groove:horizontal {{ 
+                    border: 1px solid {light_slider_groove_border}; 
+                    height: {slider_groove_height}; 
+                    background: {light_bg}; 
+                    margin: 2px 0; 
+                }}
+                QSlider::handle:horizontal {{
+                    background: {light_tick_color};
+                    border: 1px solid {light_slider_handle_border};
+                    width: {slider_handle_width}; 
+                    margin: {slider_handle_margin};
+                    border-radius: {slider_handle_radius}; 
+                }}
+
                 QSlider::tick-mark:horizontal {{
                     background: {light_tick_color};
                 }}
@@ -1907,9 +2097,12 @@ class MainWindow(QMainWindow):
             self.map_view.updateGeometry()
             self.map_view.repaint()
 
-        if hasattr(self, 'timelineSlider'):
-            self.timelineSlider.is_dark = checked
-            self.timelineSlider.update()
+        if hasattr(self, 'timeline_sliders'):
+            for slider in self.timeline_sliders.values():
+                slider.blockSignals(True)
+                slider.is_dark = checked
+                slider.update()
+                slider.blockSignals(False)
             
     def get_marker_start_time(self, file_path):
         """Helper to get the cached start time based on the file path."""
@@ -1928,7 +2121,12 @@ class MainWindow(QMainWindow):
         marker_id = self.active_marker_id
         
         # Calculate current local time for the video
-        global_pos = self.timelineSlider.value() * getattr(self, 'time_scale', 1)
+        if not self.timeline_sliders:
+            return
+            
+        current_slider_val = list(self.timeline_sliders.values())[0].value()
+        global_pos = current_slider_val * getattr(self, 'time_scale', 1)
+
         file_path = self.video_markers[marker_id]['file']
         createdtime = self.get_marker_start_time(file_path)
         start_offset = createdtime - getattr(self, 'firstCreated', 0)
@@ -2174,7 +2372,7 @@ class MainWindow(QMainWindow):
                 self.statusbar.showMessage(f"Exporting grid segment {seg_idx + 1} of {len(segments_to_export)}...", 2000)
                 QApplication.processEvents()
                 subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.f_logger.log("E_SEGM", {"output": file_path})
+                self.f_logger.log("E_GRID", {"output": file_path})
                 exported_count += 1
             except subprocess.CalledProcessError as e:
                 error_msg = e.stderr.decode('utf-8')
@@ -2183,6 +2381,18 @@ class MainWindow(QMainWindow):
                 continue
 
         self.statusbar.showMessage(f"Successfully exported {exported_count} grid segments.", 5000)
+
+    def apply_timeline_zoom(self):
+        """Scales the width of all timeline sliders to allow zooming in and out."""
+        zoom_factor = self.timelineZoomSlider.value() / 100.0
+        
+        # Base width is the visible viewport width of the scroll area
+        base_width = self.timelineScrollArea.viewport().width()
+        new_width = int(base_width * zoom_factor)
+        
+        self.timelinesWidget.setMinimumWidth(new_width)
+        for slider in self.timeline_sliders.values():
+            slider.setMinimumWidth(new_width)
 
     # @group End of Main Window:
 

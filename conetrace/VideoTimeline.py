@@ -27,6 +27,8 @@ class VideoTimeline(QSlider):
         opt = QStyleOptionSlider()
         self.initStyleOption(opt)
         groove_rect = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+        groove_rect.setTop(groove_rect.top() - 20)
+        groove_rect.setHeight(groove_rect.height() + 40)
         handle_rect = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
 
         tick_pos = self.tickPosition()
