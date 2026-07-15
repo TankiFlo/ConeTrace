@@ -96,7 +96,8 @@ class VideoTimeline(QSlider):
             painter.setBrush(QColor(255, 255, 255))
             painter.setPen(QColor(0, 0, 0)) # Thin black border for visibility
             for kf_scaled_time in keyframes:
-                kf_x = groove_rect.left() + int((kf_scaled_time / self.maximum()) * groove_rect.width())
+                kf_abs_time = start + kf_scaled_time
+                kf_x = groove_rect.left() + int((kf_abs_time / self.maximum()) * groove_rect.width())
                 # Draw small circle representing the keyframe
                 painter.drawEllipse(kf_x - 3, groove_rect.center().y() - 3, 6, 6)
             

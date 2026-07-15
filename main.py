@@ -304,6 +304,9 @@ class MainWindow(QMainWindow):
         
         self.timeline_sliders = {} # Dictionary to track individual sliders
         
+        self.statusbar = QStatusBar(self)
+        self.setStatusBar(self.statusbar)
+
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
         edit_menu = menu.addMenu("&Edit")
@@ -313,19 +316,28 @@ class MainWindow(QMainWindow):
         # ==========
         # VIEW MENU
         # ==========
-        
+        settings = QSettings("Hochschule Mittweida", "ConeTrace")
+
+        saved_preview = settings.value("show_video_preview", True)
+        # Normalize in case QSettings returns strings on certain platforms
+        preview_checked = saved_preview.lower() == 'true' if isinstance(saved_preview, str) else bool(saved_preview)
+
         self.toggle_preview_action = QAction("Show Video Preview Area", self)
         self.toggle_preview_action.setCheckable(True)
-        self.toggle_preview_action.setChecked(True) # Enabled by default
+        self.toggle_preview_action.setChecked(preview_checked)
         self.toggle_preview_action.triggered.connect(self.toggle_preview_area)
         view_menu.addAction(self.toggle_preview_action)
+        self.toggle_preview_area(preview_checked)
 
         view_menu.addSeparator()
 
+        os_dark_detected = detect_darkmode_in_windows()
+        saved_dark = settings.value("dark_mode", os_dark_detected)
+        dark_checked = saved_dark.lower() == 'true' if isinstance(saved_dark, str) else bool(saved_dark)
+
         self.dark_action = QAction("Dark Mode", self)
         self.dark_action.setCheckable(True)
-        is_dark = detect_darkmode_in_windows()
-        self.dark_action.setChecked(is_dark)
+        self.dark_action.setChecked(dark_checked)
         self.dark_action.triggered.connect(self.toggle_dark_mode)
         view_menu.addAction(self.dark_action)
 
@@ -448,9 +460,6 @@ class MainWindow(QMainWindow):
         # remove_from_comp_button = QAction("Remove from comparison", self)
         # remove_from_comp_button.triggered.connect(self.removeVideoFromComparison)
         # file_menu.addAction(remove_from_comp_button)
-
-        self.statusbar = QStatusBar(self)
-        self.setStatusBar(self.statusbar)
 
     def setupVideoCompareUi(self):
         clear_layout(self.videoComparisonArea)
@@ -618,6 +627,11 @@ class MainWindow(QMainWindow):
                 isPaintModeActive = state;
             }
 
+            function setMapView(lat, lng, zoom) {
+                var mapObj = """ + m.get_name() + """;
+                mapObj.setView([lat, lng], zoom);
+            }
+
             function syncTrackingPoints(visiblePointsJson, currentTime, maxTime) {
                 var mapObj = """ + m.get_name() + """;
                 var points = JSON.parse(visiblePointsJson);
@@ -743,6 +757,7 @@ class MainWindow(QMainWindow):
             }
 
             function getAllMarkersData() {
+                var mapObj = """ + m.get_name() + """;
                 var currentData = {};
                 for (var markerId in mapData) {
                     var marker = mapData[markerId].marker;
@@ -761,7 +776,11 @@ class MainWindow(QMainWindow):
                         arc: arc
                     };
                 }
-                return JSON.stringify(currentData);
+                return JSON.stringify({
+                    markers: currentData,
+                    center: mapObj.getCenter(),
+                    zoom: mapObj.getZoom()
+                });
             }
 
             setTimeout(function() {
@@ -776,6 +795,12 @@ class MainWindow(QMainWindow):
         self.map_view.setHtml(html)
 
     def setup_timelineSlider(self):
+        current_val = 0
+        if getattr(self, 'timeline_sliders', None):
+            current_val = list(self.timeline_sliders.values())[0].value()
+        elif hasattr(self, 'current_global_time'):
+            current_val = int(self.current_global_time // getattr(self, 'time_scale', 1))
+
         self.firstCreated = sys.maxsize
         max_end_time = 0
 
@@ -802,6 +827,9 @@ class MainWindow(QMainWindow):
         
         maxi = int(raw_maxi // self.time_scale)
 
+        if not (0 <= current_val <= maxi):
+            current_val = 0
+
         # Filter for loaded video players with resolved durations
         durations = [mp.duration() for mp in self.videoPreview_MPs if mp.duration() > 0]
         min_duration = min(durations) if durations else 5000  # Default to 5 seconds if not yet resolved
@@ -825,7 +853,6 @@ class MainWindow(QMainWindow):
             min_zoom_factor = 1.0
             max_zoom_factor = 10.0
 
-        # Temporarily block signals while updating slider settings to avoid layout flickering
         self.timelineZoomSlider.blockSignals(True)
         
         min_val = int(min_zoom_factor * 100)
@@ -840,7 +867,6 @@ class MainWindow(QMainWindow):
             
         self.timelineZoomSlider.blockSignals(False)
 
-        # Clear existing timelines
         clear_layout(self.timelinesLayout)
         self.timeline_sliders.clear()
 
@@ -884,12 +910,18 @@ class MainWindow(QMainWindow):
             self.timelinesLayout.addWidget(slider)
             self.timeline_sliders[marker_id] = slider
 
-        self.apply_timeline_zoom() # Restore zoom state upon layout refresh
+        self.apply_timeline_zoom()
+
+        self.seek(current_val)
 
     def toggle_preview_area(self, checked):
         """Toggles the visibility of the bottom video preview area and suspends/resumes players to save resources."""
         self.previewAreaWidget.setVisible(checked)
         
+        # Save state to system settings
+        settings = QSettings("Hochschule Mittweida", "ConeTrace")
+        settings.setValue("show_video_preview", checked)
+
         if not checked:
             # Immediately pause all preview players to halt background decoding threads
             for mp in getattr(self, 'videoPreview_MPs', []):
@@ -972,6 +1004,21 @@ class MainWindow(QMainWindow):
 
         dynamic_marker_data = json.loads(js_result)
         
+        try:
+            payload = json.loads(js_result)
+            if isinstance(payload, dict) and "markers" in payload:
+                dynamic_marker_data = payload["markers"]
+                map_center = payload.get("center", {"lat": self.lat, "lng": self.lon})
+                map_zoom = payload.get("zoom", self.zoom)
+            else:
+                dynamic_marker_data = payload
+                map_center = {"lat": self.lat, "lng": self.lon}
+                map_zoom = self.zoom
+        except Exception:
+            dynamic_marker_data = {}
+            map_center = {"lat": self.lat, "lng": self.lon}
+            map_zoom = self.zoom
+        
         merged_markers = {}
         for marker_id, js_data in dynamic_marker_data.items():
             if marker_id in self.video_markers:
@@ -993,7 +1040,9 @@ class MainWindow(QMainWindow):
             "markers": merged_markers,
             "compared_vids": self.currentlyComparingVideos,
             "tracking_points": getattr(self, 'tracking_points', []),
-            "saveTime": self.lastSaved
+            "saveTime": self.lastSaved,
+            "map_center": map_center,       # Added
+            "map_zoom": map_zoom           # Added
         }
         
         try:
@@ -1007,7 +1056,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.statusbar.showMessage(f"Failed to save file: {str(e)}", 5000)
 
-        # Check if the user requested to exit during the save process
         if getattr(self, '_exit_after_save', False):
             sys.exit()
 
@@ -1024,6 +1072,8 @@ class MainWindow(QMainWindow):
 
         clear_layout(self.videoPreviewArea)
         clear_layout(self.videoComparisonArea)
+
+        self.current_global_time = 0
 
         self.setup_timelineSlider()
         
@@ -1097,6 +1147,17 @@ class MainWindow(QMainWindow):
         self.currentlyComparingVideos = data.get("compared_vids", [])
         self.tracking_points = data.get("tracking_points", [])
         self.lastSaved = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        map_center = data.get("map_center")
+        map_zoom = data.get("map_zoom")
+        if map_center and map_zoom is not None:
+            lat = map_center.get("lat")
+            lng = map_center.get("lng")
+            if lat is not None and lng is not None:
+                self.lat = lat
+                self.lon = lng
+                self.zoom = map_zoom
+                self.map_view.page().runJavaScript(f"setMapView({lat}, {lng}, {map_zoom});")
 
         self.setupVideoPreviewUi()
         self.setupVideoCompareUi()
@@ -1955,6 +2016,10 @@ class MainWindow(QMainWindow):
     def toggle_dark_mode(self, checked):
         """Toggles the global application stylesheet and map tiles between dark and light themes."""
         
+        # Save state to system settings
+        settings = QSettings("Hochschule Mittweida", "ConeTrace")
+        settings.setValue("dark_mode", checked)
+
         # ==========================================
         # SHARED STRUCTURAL PARAMETERS
         # ==========================================
