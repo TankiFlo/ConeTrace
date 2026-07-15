@@ -110,13 +110,14 @@ class ForensicLogger:
                         user = entry.get("u")
                         token = entry.get("e")
                         data = entry.get("d")
+                        ver = entry.get("v")
                         
                         readable_time = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(timestamp))
                         
                         event_name = reverse_tokens.get(token, "UNKNOWN")
                         action = descriptions.get(event_name, f"Unknown action taken (Token: {token})")
                         
-                        log_sentence = f"[{readable_time}] [{user}] {action}"
+                        log_sentence = f"[{readable_time}] [{ver}] [{user}] {action}"
                         if data:
                             log_sentence += f" -> Details: {json.dumps(data)}"
                         

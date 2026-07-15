@@ -46,6 +46,7 @@ class MainWindow(QMainWindow):
         self.timeDeltaBetweenSavesBeforeWarningIsIgnored = 600000000
         '''How many ms can go between save, before the warning is not issued anymore (to prevent it popping up when haven't saved since UTC start)'''
         self.current_file_path = None
+        self.is_loading = False
 
         self.playback_timer = QTimer(self)
         self.playback_timer.timeout.connect(self.playback_tick)
@@ -59,7 +60,7 @@ class MainWindow(QMainWindow):
         self.active_timeframes = {} # Tracks active timeframe marking per video
 
         self.map_view = MapEngineView()
-        self.map_wrapper = AspectRatioWrapper(self.map_view, ratio=1.0)
+        self.map_wrapper = AspectRatioWrapper(self.map_view, ratio=5/3)
         self.map_view.fileDropped.connect(self.handle_file_drop)
 
         self.channel = QWebChannel()
@@ -310,9 +311,17 @@ class MainWindow(QMainWindow):
         help_menu = menu.addMenu("&Help")
 
         # ==========
-        # HELP MENU
+        # VIEW MENU
         # ==========
         
+        self.toggle_preview_action = QAction("Show Video Preview Area", self)
+        self.toggle_preview_action.setCheckable(True)
+        self.toggle_preview_action.setChecked(True) # Enabled by default
+        self.toggle_preview_action.triggered.connect(self.toggle_preview_area)
+        view_menu.addAction(self.toggle_preview_action)
+
+        view_menu.addSeparator()
+
         self.dark_action = QAction("Dark Mode", self)
         self.dark_action.setCheckable(True)
         is_dark = detect_darkmode_in_windows()
@@ -503,7 +512,10 @@ class MainWindow(QMainWindow):
                     videoCompare_MP.setVideoOutput(videoCompare)
                     videoCompare_AO.setVolume(0)
                     videoCompare_MP.setSource(QUrl.fromLocalFile(self.currentlyComparingVideos[i]['file']))
-                    videoCompare_MP.play()
+                    if self.playback_timer.isActive():
+                        videoCompare_MP.play()
+                    else:
+                        videoCompare_MP.pause()
 
                     videoCompareVLayout.addWidget(videoCompare_container)
                     videoCompareVLayout.addWidget(videoCompareName)
@@ -573,7 +585,10 @@ class MainWindow(QMainWindow):
                     videoPreview_AO.setVolume(0)
                     videoPreview_MP.setSource(QUrl.fromLocalFile(self.video_markers[marker_id]['file']))
                     videoPreview_MP.durationChanged.connect(self.setup_timelineSlider)
-                    videoPreview_MP.play()
+                    if self.previewAreaWidget.isVisible() and self.playback_timer.isActive():
+                        videoPreview_MP.play()
+                    else:
+                        videoPreview_MP.pause()
 
                     videoPreviewVLayout.addWidget(videoPreview_container)
                     videoPreviewVLayout.addWidget(videoPreviewName)
@@ -871,6 +886,26 @@ class MainWindow(QMainWindow):
 
         self.apply_timeline_zoom() # Restore zoom state upon layout refresh
 
+    def toggle_preview_area(self, checked):
+        """Toggles the visibility of the bottom video preview area and suspends/resumes players to save resources."""
+        self.previewAreaWidget.setVisible(checked)
+        
+        if not checked:
+            # Immediately pause all preview players to halt background decoding threads
+            for mp in getattr(self, 'videoPreview_MPs', []):
+                mp.pause()
+            # Reset map marker opacities so they don't look active
+            for marker_id in self.video_markers:
+                self.update_map_marker_opacity(self.video_markers[marker_id]['file'], False)
+        else:
+            # Force a seek to sync the newly visible preview players to the current position
+            if self.timeline_sliders:
+                current_slider_val = list(self.timeline_sliders.values())[0].value()
+                self.seek(current_slider_val)
+                
+        state = "shown" if checked else "hidden"
+        self.statusbar.showMessage(f"Video Preview Area {state}.", 3000)
+
     # @group Comparison Area Moving:
     def moveQuickPreviewToComparisonArea(self):
         if self.active_marker_id != None:
@@ -903,8 +938,6 @@ class MainWindow(QMainWindow):
             self.save_as_canvas()
 
     def save_as_canvas(self):
-        self.lastSaved = int(datetime.now(timezone.utc).timestamp() * 1000)
-        
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Canvas",
@@ -922,6 +955,8 @@ class MainWindow(QMainWindow):
     def _execute_save(self, js_result):
         if not js_result or not self.current_file_path:
             return
+
+        self.lastSaved = int(datetime.now(timezone.utc).timestamp() * 1000)
 
         dynamic_marker_data = json.loads(js_result)
         
@@ -1446,7 +1481,7 @@ class MainWindow(QMainWindow):
             mp.pause()
 
     def play_all_videos(self):
-        if not self.timeline_sliders:
+        if getattr(self, 'is_loading', False) or not self.timeline_sliders:
             return
             
         current_slider_val = list(self.timeline_sliders.values())[0].value()
@@ -1458,7 +1493,7 @@ class MainWindow(QMainWindow):
         self.playback_timer.start(33)
         self.playPauseButton.setText("PAUSE")
 
-        preview_mps = getattr(self, 'videoPreview_MPs', [])
+        preview_mps = getattr(self, 'videoPreview_MPs', []) if self.previewAreaWidget.isVisible() else []
         compare_mps = getattr(self, 'videoCompare_MPs', [])
 
         for mp in chain(preview_mps, compare_mps):
@@ -1482,6 +1517,10 @@ class MainWindow(QMainWindow):
                 mp.pause()
 
     def seek(self, pos):
+        # Prevent execution during initialization or bulk state shifts
+        if getattr(self, 'is_loading', False):
+            return
+
         # Convert scaled slider position back to real milliseconds
         real_pos = pos * getattr(self, 'time_scale', 1)
 
@@ -1497,7 +1536,7 @@ class MainWindow(QMainWindow):
         self.apply_all_keyframes(real_pos)
         self.update_tracking_markers(real_pos)
 
-        preview_mps = getattr(self, 'videoPreview_MPs', [])
+        preview_mps = getattr(self, 'videoPreview_MPs', []) if self.previewAreaWidget.isVisible() else []
         compare_mps = getattr(self, 'videoCompare_MPs', [])
 
         # Stop everything and move to specific frames
@@ -1510,6 +1549,15 @@ class MainWindow(QMainWindow):
             
             is_active = 0 <= local_pos <= mp.duration()
             self.update_map_marker_opacity(file, is_active)
+
+            video_widget = mp.videoOutput()
+            
+            if is_active:
+                if video_widget and video_widget.isHidden():
+                    video_widget.show()
+            else:
+                if video_widget and not video_widget.isHidden():
+                    video_widget.hide()
 
             mp.pause()
             
@@ -1748,6 +1796,9 @@ class MainWindow(QMainWindow):
 
     def playback_tick(self):
         """Called by QTimer during playback to update slider and apply keyframes."""
+        if getattr(self, 'is_loading', False):
+            return
+
         # 1. Advance our decoupled global clock
         now = QDateTime.currentMSecsSinceEpoch()
         dt = now - getattr(self, 'last_tick_time', now)
@@ -1782,7 +1833,7 @@ class MainWindow(QMainWindow):
         self.update_tracking_markers(global_pos)
 
         # 5. Check all players and toggle play/pause as we cross their bounds
-        preview_mps = getattr(self, 'videoPreview_MPs', [])
+        preview_mps = getattr(self, 'videoPreview_MPs', []) if self.previewAreaWidget.isVisible() else []
         compare_mps = getattr(self, 'videoCompare_MPs', [])
 
         for mp in chain(preview_mps, compare_mps):

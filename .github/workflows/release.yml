@@ -48,15 +48,15 @@ jobs:
       run: python generate_version_metadata.py
 
     - name: Compile Executable with PyInstaller
-      run: |
-        pyinstaller main.py -n ConeTrace_Console --add-binary "./res/ffprobe.exe;." --add-binary "./res/ffmpeg.exe;." --version-file=version_info.txt --onefile
+      run: # |
+        # pyinstaller main.py -n ConeTrace_Console --add-binary "./res/ffprobe.exe;." --add-binary "./res/ffmpeg.exe;." --version-file=version_info.txt --onefile
         pyinstaller main.py -n ConeTrace --add-binary "./res/ffprobe.exe;." --add-binary "./res/ffmpeg.exe;." --version-file=version_info.txt --onefile --noconsole
 
     - name: Upload Executable to GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: |
+        files: # |
           dist/ConeTrace.exe
-          dist/ConeTrace_Console.exe
+          # dist/ConeTrace_Console.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
