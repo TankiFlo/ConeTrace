@@ -894,9 +894,6 @@ class MainWindow(QMainWindow):
             # Immediately pause all preview players to halt background decoding threads
             for mp in getattr(self, 'videoPreview_MPs', []):
                 mp.pause()
-            # Reset map marker opacities so they don't look active
-            for marker_id in self.video_markers:
-                self.update_map_marker_opacity(self.video_markers[marker_id]['file'], False)
         else:
             # Force a seek to sync the newly visible preview players to the current position
             if self.timeline_sliders:
@@ -905,6 +902,21 @@ class MainWindow(QMainWindow):
                 
         state = "shown" if checked else "hidden"
         self.statusbar.showMessage(f"Video Preview Area {state}.", 3000)
+
+    def sync_marker_opacities_to_timeline(self, global_pos):
+        """Updates all map markers' opacities based purely on the global timeline position, decoupled from active players."""
+        if not hasattr(self, 'videoPreview_MPs'):
+            return
+            
+        for mp in self.videoPreview_MPs:
+            file = mp.source().toString().replace("file:///", "")
+            createdtime = self.get_marker_start_time(file)
+            start_offset = createdtime - getattr(self, 'firstCreated', 0)
+            local_pos = global_pos - start_offset
+            
+            # If the current timeline position falls within this video's duration, it is active
+            is_active = 0 <= local_pos <= mp.duration()
+            self.update_map_marker_opacity(file, is_active)
 
     # @group Comparison Area Moving:
     def moveQuickPreviewToComparisonArea(self):
@@ -1493,6 +1505,8 @@ class MainWindow(QMainWindow):
         self.playback_timer.start(33)
         self.playPauseButton.setText("PAUSE")
 
+        self.sync_marker_opacities_to_timeline(pos)
+
         preview_mps = getattr(self, 'videoPreview_MPs', []) if self.previewAreaWidget.isVisible() else []
         compare_mps = getattr(self, 'videoCompare_MPs', [])
 
@@ -1535,6 +1549,8 @@ class MainWindow(QMainWindow):
 
         self.apply_all_keyframes(real_pos)
         self.update_tracking_markers(real_pos)
+
+        self.sync_marker_opacities_to_timeline(real_pos)
 
         preview_mps = getattr(self, 'videoPreview_MPs', []) if self.previewAreaWidget.isVisible() else []
         compare_mps = getattr(self, 'videoCompare_MPs', [])
@@ -1831,6 +1847,8 @@ class MainWindow(QMainWindow):
         # 4. Interpolate and apply map markers
         self.apply_all_keyframes(global_pos)
         self.update_tracking_markers(global_pos)
+
+        self.sync_marker_opacities_to_timeline(global_pos)
 
         # 5. Check all players and toggle play/pause as we cross their bounds
         preview_mps = getattr(self, 'videoPreview_MPs', []) if self.previewAreaWidget.isVisible() else []
